@@ -1,6 +1,6 @@
 #---------------------------------------------------------------------------------------
-# Name:        module1
-# Purpose:
+# Name:        Assignment 02
+# Purpose:      
 #
 # Author:      vince
 #
@@ -90,7 +90,6 @@ arcpy.management.CopyFeatures(in_feature, out_feature)
 print(arcpy.GetMessages())
 print("")
 
-#Merging features
 #making feature layers
 base_workspace=r"C:\GEOS456\Assign02\Base"
 for dirpath, dirnames, filenames in arcpy.da.Walk(base_workspace):
@@ -107,20 +106,6 @@ for dirpath, dirnames, filenames in arcpy.da.Walk(base_workspace):
        elif file=="BF_ROAD_ARC.shp":
            roads_layer=arcpy.MakeFeatureLayer_management(shp_path, "Roads")
 
-###merging
-##layer_list= ["contours_not_merged", "cut_trail_not_merged", "pipeline_not_merged", "powerline_not_merged", "road_not_merged"]
-##for layers in layer_list:y
-##    output=os.path.join(gdb_path, f"{layers}_Merged")
-##    arcpy.management.Merge([layers], output)
-##
-##    arcpy.management.DefineProjection(output, define_coord)
-##
-##    out_dataset=os.path.join(gdb_path, f"{layers}_projected")
-##    arcpy.management.Project(output, out_dataset, coordinates)
-##
-##    arcpy.management.Delete(output)
-
-
 #merging
 layer_list= ["Contours", "Cut_Trails", "Pipelines", "Powerlines", "Roads"]
 for layers in layer_list:
@@ -134,12 +119,10 @@ for layers in layer_list:
 
    out_clip=os.path.join(gdb_path, f"{layers}_clipped")
 
+#Cliping
    arcpy.analysis.Clip(out_dataset, studyArea_path, out_clip)
-
-
    for features in [output, out_dataset]:
        arcpy.management.Delete(features)
-
 
 arcpy.env.workspace=r"C:\GEOS456\Assign02\DLS"
 DLS_fc=arcpy.ListFeatureClasses()
@@ -160,8 +143,3 @@ fc_list=arcpy.ListFeatureClasses()
 for files in fc_list:
    print(f" - {files}")
    print("")
-
-
-
-
-
