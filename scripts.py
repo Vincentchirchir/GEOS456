@@ -44,13 +44,13 @@ gdb_path = os.path.join(workspace, gdb_name + ".gdb")  # saving the full path of
 print(arcpy.GetMessages())
 print("")
 
-# Creating Geodatabase Feature Datasets
-# fc_datasets = ["ATS", "Pipelines", "Features", "Classification"]
-# for fcdt in fc_datasets:
-#     print(f"Creating the {fcdt} feature dataset")
-#     arcpy.CreateFeatureDataset_management(gdb_path, fcdt, projection)
-#     print(f"{fcdt} successfull created!")
-#     print("")
+#Creating Geodatabase Feature Datasets
+fc_datasets = ["ATS", "Pipelines", "Features", "Classification"]
+for fcdt in fc_datasets:
+    print(f"Creating the {fcdt} feature dataset")
+    arcpy.CreateFeatureDataset_management(gdb_path, fcdt, projection)
+    print(f"{fcdt} successfull created!")
+    print("")
 
 # identifying studying area
 study_area_section = next(
@@ -93,22 +93,37 @@ for data_list in data:
     valid_name = arcpy.ValidateTableName(
         base, gdb_path
     )  # validating names before building output
-    desc = arcpy.Describe(dataList_path)
-    for fc_data in dataList_path:
-        print("Spatial Reference: ", desc.spatialReference.name)
 
-    # set names
-    projected_data = os.path.join(gdb_path, valid_name + "_prj")  # sets names for projected data. projected data will end with _prj
-    clipped_data = os.path.join(gdb_path, valid_name + "_clip") #clipped data will end with _clip
+    desc = arcpy.Describe(dataList_path)
+    print("Data Type: ", desc.dataType)
+    print("Spatial Reference: ", desc.spatialReference.name)
 
     #Define projection data  
     if desc.spatialReference.name == "Unknown":
         arcpy.DefineProjection_management(dataList_path, define_projection)
+        desc=arcpy.Describe(dataList_path)
 
-    #project
-    arcpy.management.Project(dataList_path, projected_data, projection)
+    #projecting Vector
+    if desc.dataType in ["FeatureClass", "ShapeFile"]:
+        projected_data = os.path.join(gdb_path, valid_name + "_prj")  # sets names for projected data. projected data will end with _prj
+        arcpy.management.Project(dataList_path, projected_data, projection)
+        print("Projected Data: ", projected_data)
+    
+    #projecting rasters
+    elif desc.dataType=="Tin":
+        projected_data = os.path.join(gdb_path, valid_name + "_prj")  # sets names for projected data raster. projected data will end with _prj
+        arcpy.management.ProjectRaster(
+            in_raster=dataList_path,
+            out_raster=projected_data,
+            out_coor_system=projection
+        )
+        print("Projected raster: ", projected_data)
+
+    else:
+        print(f"Unsupported type: {desc.dataType}")
 
     # # clip data
+    #clipped_data = os.path.join(gdb_path, valid_name + "_clip") #clipped data will end with _clip
     # arcpy.analysis.Clip(projected_data, studyarea_path, clipped_data)
 
     # # Delete internediate projected data
