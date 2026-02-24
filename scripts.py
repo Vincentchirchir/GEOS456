@@ -107,6 +107,58 @@ for data_list in data:
 
     #project
     arcpy.management.Project(dataList_path, projected_data, projection)
+    import os
+import arcpy
+
+arcpy.env.overwriteOutput = True
+
+for item in data:  # your list of dataset names
+    item_path = next(
+        (p for p in data_list if os.path.basename(p).lower() == item.lower()),
+        None
+    )
+
+    if not item_path:
+        print(f"Not found: {item}")
+        continue
+
+    base = os.path.splitext(item)[0]
+    valid_name = arcpy.ValidateTableName(base, gdb_path)
+
+    desc = arcpy.Describe(item_path)
+    print(f"{item} | Type: {desc.dataType}")
+    print("Spatial Reference:", desc.spatialReference.name)
+
+    # Define projection if Unknown
+    if desc.spatialReference.name == "Unknown":
+        arcpy.DefineProjection_management(item_path, define_projection)
+        desc = arcpy.Describe(item_path)
+
+    # -------- VECTOR --------
+    if desc.dataType in ["FeatureClass", "ShapeFile"]:
+        projected_output = os.path.join(gdb_path, f"{valid_name}_prj")
+
+        arcpy.management.Project(
+            item_path,
+            projected_output,
+            projection
+        )
+        print("Projected vector:", projected_output)
+
+    # -------- RASTER --------
+    elif desc.dataType == "RasterDataset":
+        projected_output = os.path.join(gdb_path, f"{valid_name}_prj")
+
+        arcpy.management.ProjectRaster(
+            in_raster=item_path,
+            out_raster=projected_output,
+            out_coor_system=projection,
+            resampling_type="BILINEAR"  # change if categorical
+        )
+        print("Projected raster:", projected_output)
+
+    else:
+        print(f"Unsupported type: {desc.dataType}")
 
     # # clip data
     # arcpy.analysis.Clip(projected_data, studyarea_path, clipped_data)
