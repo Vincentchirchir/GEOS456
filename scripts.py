@@ -44,13 +44,13 @@ gdb_path = os.path.join(workspace, gdb_name + ".gdb")  # saving the full path of
 print(arcpy.GetMessages())
 print("")
 
-#Creating Geodatabase Feature Datasets
-fc_datasets = ["ATS", "Pipelines", "Features", "Classification"]
-for fcdt in fc_datasets:
-    print(f"Creating the {fcdt} feature dataset")
-    arcpy.CreateFeatureDataset_management(gdb_path, fcdt, projection)
-    print(f"{fcdt} successfull created!")
-    print("")
+# Creating Geodatabase Feature Datasets
+# fc_datasets = ["ATS", "Pipelines", "Features", "Classification"]
+# for fcdt in fc_datasets:
+#     print(f"Creating the {fcdt} feature dataset")
+#     arcpy.CreateFeatureDataset_management(gdb_path, fcdt, projection)
+#     print(f"{fcdt} successfull created!")
+#     print("")
 
 # identifying studying area
 study_area_section = next(
@@ -86,7 +86,7 @@ for data_list in data:
     dataList_path = next(
         p for p in data_shp if os.path.basename(p).lower() == data_list.lower()
     )  # Finds the full path of that shapefile in your workspace (case-insensitive).
-    
+
     base = os.path.splitext(data_list)[
         0
     ]  # Removes .shp to get the base name (example: "Airdrie_Roads")
@@ -94,210 +94,218 @@ for data_list in data:
         base, gdb_path
     )  # validating names before building output
 
+    #Describing data to understand for example coordinates, geometry, shapetype
     desc = arcpy.Describe(dataList_path)
     print("Data Type: ", desc.dataType)
     print("Spatial Reference: ", desc.spatialReference.name)
 
-    #Define projection data  
+    # set names
+    projected_data = os.path.join(gdb_path, valid_name + "_prj")  # sets names for projected data. projected data will end with _prj
+    clipped_data = os.path.join(gdb_path, valid_name + "_clip") #clipped data will end with _clip
+
+    #Define projection data
     if desc.spatialReference.name == "Unknown":
         arcpy.DefineProjection_management(dataList_path, define_projection)
-        desc=arcpy.Describe(dataList_path)
+        print(arcpy.GetMessages())
 
-    #projecting Vector
+    #project
     if desc.dataType in ["FeatureClass", "ShapeFile"]:
-        projected_data = os.path.join(gdb_path, valid_name + "_prj")  # sets names for projected data. projected data will end with _prj
         arcpy.management.Project(dataList_path, projected_data, projection)
-        print("Projected Data: ", projected_data)
-    
-    #projecting rasters
-    elif desc.dataType=="Tin":
-        projected_data = os.path.join(gdb_path, valid_name + "_prj")  # sets names for projected data raster. projected data will end with _prj
-        arcpy.management.ProjectRaster(
-            in_raster=dataList_path,
-            out_raster=projected_data,
-            out_coor_system=projection
+        arcpy.analysis.Clip(projected_data, studyarea_path, clipped_data)
+        print(arcpy.GetMessages())
+
+    elif desc.dataType =="RasterDataset":
+        arcpy.management.ProjectRaster(dataList_path, projected_data, projection, "BILINEAR")
+        #clip to study area
+        # arcpy.management.Clip(projected_data, "#", clipped_data, studyarea_path, "#", "ClippingGeometry", "MAINTAIN_EXTENT")
+
+    elif desc.dataType =="Tin":
+        #convert TIN to raster
+        tin_folder=os.path.join(workspace, valid_name + "_tinrast.tif")
+        arcpy.ddd.TinRaster(dataList_path, tin_folder, "FLOAT" )
+        #PROJECT the TIN WE CONVERTED TO RASTER
+        arcpy.management.ProjectRaster(tin_folder, projected_data, projection, "BILINEAR")
+        #cLIP
+        # arcpy.management.Clip(projected_data, "#", clipped_data, studyarea_path, "#", "ClippingGeometry", "MAINTAIN_EXTENT") # cLIP THE RASTER WE GENERATED FROM TIN
+
+    # Delete internediate projected data
+    arcpy.management.Delete(projected_data)
+
+    print(f"Successfully projected and clipped {data_list} = {clipped_data}")
+
+# creating a route [linear referencing]
+pipeline_fc = os.path.join(gdb_path, "Pipelines_GCS_NAD83_clip")  # path for pipeline
+
+# create a new field for route ID if the data do not have
+route_id_field = "Route_ID"
+if route_id_field not in [f.name for f in arcpy.ListFields(pipeline_fc)]:  # check if the field RouteID exists in pipeline data
+    arcpy.management.AddField(pipeline_fc, route_id_field, "TEXT", field_length=50 )  # if not, add a new field
+
+# calculate the new field
+arcpy.management.CalculateField(pipeline_fc, route_id_field, "'PIPE_01'", "PYTHON3")  # CALCULATES A CONSTATNT VALUE FROM PIPE_01 for every pipe
+
+# Dissolve pipeline to one feature or one per routeID
+pipeline_diss = os.path.join(gdb_path, "Pipeline_Dissolve")
+arcpy.management.Dissolve(pipeline_fc, pipeline_diss, route_id_field)
+
+# CREATING M ENABLED ROUTE FEATURE CLASS
+routes_fc = os.path.join(gdb_path, "Pipeline_Route")  # path for output route
+arcpy.lr.CreateRoutes(
+    pipeline_diss, route_id_field, routes_fc, "LENGTH"
+)  # LENGTH tells ArcGIS to create measures from 0 to total length coz we dont have starting and ending distance
+
+#excluding features here coz pipeline is the main route we are checking it interscts with which feature
+arcpy.env.workspace = gdb_path
+fc_gdb = arcpy.ListFeatureClasses()
+exclude_fc = {
+    "pipelines_gcs_nad83_clip",  # the clipped pipe
+    "pipeline_dissolve",  # dissolve output
+    "pipeline_route",  # route output
+}
+include_fc = [fc for fc in fc_gdb if fc.lower() not in exclude_fc]
+for fc in include_fc:
+    print(fc)
+
+#Where does pipeline Intersect/overlap with other features?
+intersect_points = [] #it will store points where it intersect with pipeline
+overlap = [] #it will store where pipeline overlaps other features
+
+for f in include_fc:
+    desc = arcpy.Describe(f) #describe features that will be inlcuded
+    geom = desc.shapeType
+
+    base_name = os.path.basename(f)
+
+    out_point = os.path.join(
+        gdb_path, arcpy.ValidateTableName(base_name + "_point", gdb_path)
+    )
+    arcpy.analysis.Intersect([pipeline_diss, f], out_point, output_type="POINT")
+    intersect_points.append(out_point)
+    print(f"Point Intersect created: {out_point}")
+
+    if geom == "Polygon":
+        out_overlap = os.path.join(
+            gdb_path, arcpy.ValidateTableName(base_name + "_overlap", gdb_path)
         )
-        print("Projected raster: ", projected_data)
+        arcpy.analysis.Intersect([pipeline_diss, f], out_overlap, "", "", output_type="LINE")
+        overlap.append(out_overlap)
+        print(f"Overlap Created: {out_overlap}")
 
-    else:
-        print(f"Unsupported type: {desc.dataType}")
+# Locating features along the route. It produces table
+event_tables_points = []
+event_tables_lines = []
 
-    # # clip data
-    #clipped_data = os.path.join(gdb_path, valid_name + "_clip") #clipped data will end with _clip
-    # arcpy.analysis.Clip(projected_data, studyarea_path, clipped_data)
+# locate points intersecting pipeline
+for point_fc in intersect_points:
+    out_table = os.path.join(
+        gdb_path,
+        arcpy.ValidateTableName(os.path.basename(point_fc) + "_event", gdb_path),
+    )
 
-    # # Delete internediate projected data
-    # arcpy.management.Delete(projected_data)
+    arcpy.lr.LocateFeaturesAlongRoutes(
+        in_features=point_fc,
+        in_routes=routes_fc,
+        route_id_field=route_id_field,
+        radius_or_tolerance="5 Meters",
+        out_table=out_table,
+        out_event_properties=f"{route_id_field} POINT MEAS",
+        route_locations="",
+        distance_field="DISTANCE",
+    )
+    event_tables_points.append(out_table)
+    print("Created event table: ", out_table)
+    print(arcpy.GetMessages())
 
-    # print(f"Successfully projected and clipped {data_list} = {clipped_data}")
+    # locating overlps
+for overlaps in overlap:
+    out_table_overlap = os.path.join(
+    gdb_path,
+    arcpy.ValidateTableName(os.path.basename(overlaps) + "_events", gdb_path),
+    )
+    print("Overlap shapeType:", arcpy.Describe(overlaps).shapeType)
 
-# # creating a route [linear referencing]
-# pipeline_fc = os.path.join(gdb_path, "Pipelines_GCS_NAD83_clip")  # path for pipeline
+    arcpy.lr.LocateFeaturesAlongRoutes(
+        in_features=overlaps,
+        in_routes=routes_fc,
+        route_id_field=route_id_field,
+        radius_or_tolerance="20 Meters",
+        out_table=out_table_overlap,
+        out_event_properties=f"{route_id_field} LINE FMEAS TMEAS",
+        distance_field="DISTANCE",
+    )
+    event_tables_lines.append(out_table_overlap)
+    print("Overlap Event Table: ", out_table_overlap)
+    print(arcpy.GetMessages())
 
-# # create a new field for route ID if the data do not have
-# route_id_field = "Route_ID"
-# if route_id_field not in [f.name for f in arcpy.ListFields(pipeline_fc)]:  # check if the field RouteID exists in pipeline data
-#     arcpy.management.AddField(pipeline_fc, route_id_field, "TEXT", field_length=50 )  # if not, add a new field
+# Chainage
+calculate_field = r"""
+def chain(m):
+    m=int(round(float(m)))
+    km=m//1000
+    remainder=m % 1000
+    return f"{km} + {remainder:03d}"
 
-# # calculate the new field
-# arcpy.management.CalculateField(pipeline_fc, route_id_field, "'PIPE_01'", "PYTHON3")  # CALCULATES A CONSTATNT VALUE FROM PIPE_01 for every pipe
+"""
 
-# # Dissolve pipeline to one feature or one per routeID
-# pipeline_diss = os.path.join(gdb_path, "Pipeline_Dissolve")
-# arcpy.management.Dissolve(pipeline_fc, pipeline_diss, route_id_field)
+# chainage for point
+for table in event_tables_points:
+    if "Chainage" not in [f.name for f in arcpy.ListFields(table)]:
+        arcpy.management.AddField(table, "Chainage", "TEXT", field_length=20)
 
+    arcpy.management.CalculateField(
+        table, "Chainage", "chain(!MEAS!)", "PYTHON3", calculate_field
+    )
+    print("Chainage added (points):", table)
 
-# # CREATING M ENABLED ROUTE FEATURE CLASS
-# routes_fc = os.path.join(gdb_path, "Pipeline_Route")  # path for output route
-# arcpy.lr.CreateRoutes(
-#     pipeline_diss, route_id_field, routes_fc, "LENGTH"
-# )  # LENGTH tells ArcGIS to create measures from 0 to total length coz we dont have starting and ending distance
+# For LINE event tables (overlaps)
+for table_overlap in event_tables_lines:
+    existing = [f.name for f in arcpy.ListFields(table_overlap)]
 
-# arcpy.env.workspace = gdb_path
-# fc_gdb = arcpy.ListFeatureClasses()
-# exclude_fc = {
-#     "pipelines_gcs_nad83_clip",  # the clipped pipe
-#     "pipeline_dissolve",  # dissolve output
-#     "pipeline_route",  # route output
-# }
-# include_fc = [fc for fc in fc_gdb if fc.lower() not in exclude_fc]
-# for fc in include_fc:
-#     print(fc)
+    if "FromCh" not in existing:
+        arcpy.management.AddField(table_overlap, "FromCh", "TEXT", field_length=20)
+    if "ToCh" not in existing:
+        arcpy.management.AddField(table_overlap, "ToCh", "TEXT", field_length=20)
+    if "ChainageRange" not in existing:
+        arcpy.management.AddField(
+            table_overlap, "ChainageRange", "TEXT", field_length=30
+        )
 
-# intersect_points = []
-# overlap = []
+    arcpy.management.CalculateField(
+        table_overlap, "FromCh", "chain(!FMEAS!)", "PYTHON3", calculate_field
+    )
+    arcpy.management.CalculateField(
+        table_overlap, "ToCh", "chain(!TMEAS!)", "PYTHON3", calculate_field
+    )
+    arcpy.management.CalculateField(
+        table_overlap, "ChainageRange", "!FromCh! + ' – ' + !ToCh!", "PYTHON3"
+    )
+    print("Chainage range added (lines):", table_overlap)
 
-# for f in include_fc:
-#     desc = arcpy.Describe(f)
-#     geom = desc.shapeType
+# Create Route Event Layers for display
+# POINT event layers
+for tbl in event_tables_points:
+    lyr_name = os.path.basename(tbl) + "_lyr"
+    arcpy.lr.MakeRouteEventLayer(
+        in_routes=routes_fc,
+        route_id_field=route_id_field,
+        in_table=tbl,
+        in_event_properties=f"{route_id_field} POINT MEAS",
+        out_layer=lyr_name,
+    )
+    out_layer = os.path.join(gdb_path, arcpy.ValidateTableName(lyr_name + "_fc", gdb_path))
+    arcpy.management.CopyFeatures(lyr_name, out_layer)
+    print("Made POINT event layer:", lyr_name)
 
-#     base_name = os.path.basename(f)
-
-#     out_point = os.path.join(
-#         gdb_path, arcpy.ValidateTableName(base_name + "_point", gdb_path)
-#     )
-#     arcpy.analysis.Intersect([pipeline_diss, f], out_point, output_type="POINT")
-#     intersect_points.append(out_point)
-#     print(f"Point Intersect created: {out_point}")
-
-#     if geom == "Polygon":
-#         out_overlap = os.path.join(
-#             gdb_path, arcpy.ValidateTableName(base_name + "_overlap", gdb_path)
-#         )
-#         arcpy.analysis.Intersect([pipeline_diss, f], out_overlap, "", "", output_type="LINE")
-#         overlap.append(out_overlap)
-#         print(f"Overlap Created: {out_overlap}")
-
-# # Locating features along the route. It produces table
-# event_tables_points = []
-# event_tables_lines = []
-
-# # locate points intersecting pipeline
-# for point_fc in intersect_points:
-#     out_table = os.path.join(
-#         gdb_path,
-#         arcpy.ValidateTableName(os.path.basename(point_fc) + "_event", gdb_path),
-#     )
-
-#     arcpy.lr.LocateFeaturesAlongRoutes(
-#         in_features=point_fc,
-#         in_routes=routes_fc,
-#         route_id_field=route_id_field,
-#         radius_or_tolerance="5 Meters",
-#         out_table=out_table,
-#         out_event_properties=f"{route_id_field} POINT MEAS",
-#         route_locations="",
-#         distance_field="DISTANCE",
-#     )
-#     event_tables_points.append(out_table)
-#     print("Created event table: ", out_table)
-#     print(arcpy.GetMessages())
-
-#     # locating overlps
-#     for overlaps in overlap:
-#         out_table_overlap = os.path.join(
-#             gdb_path,
-#             arcpy.ValidateTableName(os.path.basename(overlaps) + "_events", gdb_path),
-#         )
-
-#         arcpy.lr.LocateFeaturesAlongRoutes(
-#             in_features=overlaps,
-#             in_routes=routes_fc,
-#             route_id_field=route_id_field,
-#             radius_or_tolerance="5 Meters",
-#             out_table=out_table_overlap,
-#             out_event_properties=f"{route_id_field} LINE From To",
-#             distance_field="DISTANCE",
-#         )
-#         event_tables_lines.append(out_table_overlap)
-#         print("Overlap Event Table: ", out_table_overlap)
-#         print(arcpy.GetMessages())
-
-# # Chainage
-# calculate_field = r"""
-# def chain(m):
-#     m=int(round(m))
-#     km=m//1000
-#     remainder=m % 1000
-#     return f"{km} + {rem:03d}"
-
-# """
-
-# # chainage for point
-# for table in event_tables_points:
-#     if "Chainage" not in [f.name for f in arcpy.ListFields(table)]:
-#         arcpy.management.Addfield(table, "Chainage", "TEXT", field_length=20)
-
-#     arcpy.management.CalculateField(
-#         table, "Chainage", "ch(!MEAS!)", "PYTHON3", calculate_field
-#     )
-#     print("Chainage added (points):", table)
-
-# # For LINE event tables (overlaps)
-# for table_overlap in event_tables_lines:
-#     existing = [f.name for f in arcpy.ListFields(table_overlap)]
-
-#     if "FromCh" not in existing:
-#         arcpy.management.AddField(table_overlap, "FromCh", "TEXT", field_length=20)
-#     if "ToCh" not in existing:
-#         arcpy.management.AddField(table_overlap, "ToCh", "TEXT", field_length=20)
-#     if "ChainageRange" not in existing:
-#         arcpy.management.AddField(
-#             table_overlap, "ChainageRange", "TEXT", field_length=35
-#         )
-
-#     arcpy.management.CalculateField(
-#         table_overlap, "FromCh", "ch(!FromM!)", "PYTHON3", calculate_field
-#     )
-#     arcpy.management.CalculateField(
-#         table_overlap, "ToCh", "ch(!ToM!)", "PYTHON3", calculate_field
-#     )
-#     arcpy.management.CalculateField(
-#         table_overlap, "ChainageRange", "!FromCh! + ' – ' + !ToCh!", "PYTHON3"
-#     )
-#     print("Chainage range added (lines):", table_overlap)
-
-# # Create Route Event Layers for display
-# # POINT event layers
-# for tbl in event_tables_points:
-#     lyr_name = os.path.basename(tbl) + "_lyr"
-#     arcpy.lr.MakeRouteEventLayer(
-#         in_routes=routes_fc,
-#         route_id_field=route_id_field,
-#         in_table=tbl,
-#         in_event_properties=f"{route_id_field} POINT MEAS",
-#         out_layer=lyr_name,
-#     )
-#     print("Made POINT event layer:", lyr_name)
-
-# # LINE event layers
-# for tbl in event_tables_lines:
-#     lyr_name = os.path.basename(tbl) + "_lyr"
-#     arcpy.lr.MakeRouteEventLayer(
-#         in_routes=routes_fc,
-#         route_id_field=route_id_field,
-#         in_table=tbl,
-#         in_event_properties=f"{route_id_field} LINE FromM ToM",
-#         out_layer=lyr_name,
-#     )
-#     print("Made LINE event layer:", lyr_name)
+# LINE event layers
+for tbl in event_tables_lines:
+    lyr_name = os.path.basename(tbl) + "_lyr"
+    arcpy.lr.MakeRouteEventLayer(
+        in_routes=routes_fc,
+        route_id_field=route_id_field,
+        in_table=tbl,
+        in_event_properties=f"{route_id_field} LINE FMEAS TMEAS",
+        out_layer=lyr_name,
+    )
+    out_fc = os.path.join(gdb_path, arcpy.ValidateTableName(lyr_name + "_fc", gdb_path))
+    arcpy.management.CopyFeatures(lyr_name, out_fc)
+    print("Made LINE event layer:", lyr_name)

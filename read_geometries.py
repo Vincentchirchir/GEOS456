@@ -50,3 +50,5 @@ for row in scursor:
         #reference the "point" variable in the FOR loop
         #use predefined ".X", and ".Y" to extract AND PRINT THE xy coordinates
         print("X:", point.X, "Y:", point.Y)
+
+
