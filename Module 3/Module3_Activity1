@@ -1,0 +1,23 @@
+import arcpy
+from arcpy import env
+env.workspace=r"C:\GEOS456\Data.gdb"
+
+#list features inside gdb and use describe function to return the spatial reference of the feature class
+fc=arcpy.ListFeatureClasses()
+for fc_list in fc:
+    print(fc_list)
+    desc=arcpy.Describe(fc_list)
+    print("Spatial Reference: ", desc.spatialReference.name)
+    print("Shape Type: ", desc.shapeType)
+    print("Path: ", desc.catalogPath)
+    print(" ")
+
+#create a variable that will reference every spatial data
+fcName1="CityBoundaries"
+fcName2="Parcels"
+fcName3="Burglary"
+fcName4="Crimes2009"
+
+
+
+
