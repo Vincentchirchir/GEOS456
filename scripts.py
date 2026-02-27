@@ -2,7 +2,7 @@ import arcpy
 import os  # python library for joining folders, getting filenames
 
 projection = arcpy.SpatialReference("NAD 1983 CSRS 3TM 114")
-define_projection = arcpy.SpatialReference("NAD 1983 CSRS 10TM AEP Resource")
+define_projection = arcpy.SpatialReference(3780)
 
 arcpy.env.workspace = r"C:\Capstone\processing_data"  # Data path
 workspace = arcpy.env.workspace
@@ -23,9 +23,9 @@ data_shp = features(
     workspace
 )  # calls the feature function to get all data and its path stored earlier
 
-#print all data and path
+# print all data and path
 for data in data_shp:
-   print(data)
+    print(data)
 
 # Delete any gdb found and create a new one
 wkspace = arcpy.ListWorkspaces("", "FileGDB")  # LIST ALL GDB IN THE WORKSPACE
@@ -79,7 +79,7 @@ data = [
     "glac_landform_ln_ll.shp",
     # "V4-1_LSD.shp",
     "Base_Waterbody_Polygon.shp",
-    "Target_A"
+    "Target_A",
 ]
 
 for data_list in data:
@@ -94,39 +94,53 @@ for data_list in data:
         base, gdb_path
     )  # validating names before building output
 
-    #Describing data to understand for example coordinates, geometry, shapetype
+    # Describing data to understand for example coordinates, geometry, shapetype
     desc = arcpy.Describe(dataList_path)
     print("Data Type: ", desc.dataType)
     print("Spatial Reference: ", desc.spatialReference.name)
 
     # set names
-    projected_data = os.path.join(gdb_path, valid_name + "_prj")  # sets names for projected data. projected data will end with _prj
-    clipped_data = os.path.join(gdb_path, valid_name + "_clip") #clipped data will end with _clip
+    projected_data = os.path.join(
+        gdb_path, valid_name + "_prj"
+    )  # sets names for projected data. projected data will end with _prj
+    clipped_data = os.path.join(
+        gdb_path, valid_name + "_clip"
+    )  # clipped data will end with _clip
+    contour_output = os.path.join(
+        gdb_path, valid_name + "_contours"
+    )  # name and path for contours
 
-    #Define projection data
+    # Define projection data
     if desc.spatialReference.name == "Unknown":
         arcpy.DefineProjection_management(dataList_path, define_projection)
         print(arcpy.GetMessages())
 
-    #project
+    # project
     if desc.dataType in ["FeatureClass", "ShapeFile"]:
         arcpy.management.Project(dataList_path, projected_data, projection)
         arcpy.analysis.Clip(projected_data, studyarea_path, clipped_data)
         print(arcpy.GetMessages())
 
-    elif desc.dataType =="RasterDataset":
-        arcpy.management.ProjectRaster(dataList_path, projected_data, projection, "BILINEAR")
-        #clip to study area
+    elif desc.dataType == "RasterDataset":
+        arcpy.management.ProjectRaster(
+            dataList_path, projected_data, projection, "BILINEAR"
+        )
+        # clip to study area
         # arcpy.management.Clip(projected_data, "#", clipped_data, studyarea_path, "#", "ClippingGeometry", "MAINTAIN_EXTENT")
 
-    elif desc.dataType =="Tin":
-        #convert TIN to raster
-        tin_folder=os.path.join(workspace, valid_name + "_tinrast.tif")
-        arcpy.ddd.TinRaster(dataList_path, tin_folder, "FLOAT" )
-        #PROJECT the TIN WE CONVERTED TO RASTER
-        arcpy.management.ProjectRaster(tin_folder, projected_data, projection, "BILINEAR")
-        #cLIP
-        # arcpy.management.Clip(projected_data, "#", clipped_data, studyarea_path, "#", "ClippingGeometry", "MAINTAIN_EXTENT") # cLIP THE RASTER WE GENERATED FROM TIN
+    elif desc.dataType == "Tin":
+        # converting Lidar to contour
+        interval = 5
+        print("Generating Contours...")
+        arcpy.ddd.SurfaceContour(dataList_path, contour_output, interval)
+
+        # Project
+        arcpy.management.Project(contour_output, projected_data, projection)
+
+        # Clip
+        arcpy.analysis.Clip(projected_data, studyarea_path, clipped_data)
+
+        print(arcpy.GetMessages())
 
     # Delete internediate projected data
     arcpy.management.Delete(projected_data)
@@ -138,11 +152,17 @@ pipeline_fc = os.path.join(gdb_path, "Pipelines_GCS_NAD83_clip")  # path for pip
 
 # create a new field for route ID if the data do not have
 route_id_field = "Route_ID"
-if route_id_field not in [f.name for f in arcpy.ListFields(pipeline_fc)]:  # check if the field RouteID exists in pipeline data
-    arcpy.management.AddField(pipeline_fc, route_id_field, "TEXT", field_length=50 )  # if not, add a new field
+if route_id_field not in [
+    f.name for f in arcpy.ListFields(pipeline_fc)
+]:  # check if the field RouteID exists in pipeline data
+    arcpy.management.AddField(
+        pipeline_fc, route_id_field, "TEXT", field_length=50
+    )  # if not, add a new field
 
 # calculate the new field
-arcpy.management.CalculateField(pipeline_fc, route_id_field, "'PIPE_01'", "PYTHON3")  # CALCULATES A CONSTATNT VALUE FROM PIPE_01 for every pipe
+arcpy.management.CalculateField(
+    pipeline_fc, route_id_field, "'PIPE_01'", "PYTHON3"
+)  # CALCULATES A CONSTATNT VALUE FROM PIPE_01 for every pipe
 
 # Dissolve pipeline to one feature or one per routeID
 pipeline_diss = os.path.join(gdb_path, "Pipeline_Dissolve")
@@ -154,7 +174,7 @@ arcpy.lr.CreateRoutes(
     pipeline_diss, route_id_field, routes_fc, "LENGTH"
 )  # LENGTH tells ArcGIS to create measures from 0 to total length coz we dont have starting and ending distance
 
-#excluding features here coz pipeline is the main route we are checking it interscts with which feature
+# excluding features here coz pipeline is the main route we are checking it interscts with which feature
 arcpy.env.workspace = gdb_path
 fc_gdb = arcpy.ListFeatureClasses()
 exclude_fc = {
@@ -166,12 +186,12 @@ include_fc = [fc for fc in fc_gdb if fc.lower() not in exclude_fc]
 for fc in include_fc:
     print(fc)
 
-#Where does pipeline Intersect/overlap with other features?
-intersect_points = [] #it will store points where it intersect with pipeline
-overlap = [] #it will store where pipeline overlaps other features
+# Where does pipeline Intersect/overlap with other features?
+intersect_points = []  # it will store points where it intersect with pipeline
+overlap = []  # it will store where pipeline overlaps other features
 
 for f in include_fc:
-    desc = arcpy.Describe(f) #describe features that will be inlcuded
+    desc = arcpy.Describe(f)  # describe features that will be inlcuded
     geom = desc.shapeType
 
     base_name = os.path.basename(f)
@@ -187,7 +207,9 @@ for f in include_fc:
         out_overlap = os.path.join(
             gdb_path, arcpy.ValidateTableName(base_name + "_overlap", gdb_path)
         )
-        arcpy.analysis.Intersect([pipeline_diss, f], out_overlap, "", "", output_type="LINE")
+        arcpy.analysis.Intersect(
+            [pipeline_diss, f], out_overlap, "", "", output_type="LINE"
+        )
         overlap.append(out_overlap)
         print(f"Overlap Created: {out_overlap}")
 
@@ -219,8 +241,8 @@ for point_fc in intersect_points:
     # locating overlps
 for overlaps in overlap:
     out_table_overlap = os.path.join(
-    gdb_path,
-    arcpy.ValidateTableName(os.path.basename(overlaps) + "_events", gdb_path),
+        gdb_path,
+        arcpy.ValidateTableName(os.path.basename(overlaps) + "_events", gdb_path),
     )
     print("Overlap shapeType:", arcpy.Describe(overlaps).shapeType)
 
@@ -292,7 +314,9 @@ for tbl in event_tables_points:
         in_event_properties=f"{route_id_field} POINT MEAS",
         out_layer=lyr_name,
     )
-    out_layer = os.path.join(gdb_path, arcpy.ValidateTableName(lyr_name + "_fc", gdb_path))
+    out_layer = os.path.join(
+        gdb_path, arcpy.ValidateTableName(lyr_name + "_fc", gdb_path)
+    )
     arcpy.management.CopyFeatures(lyr_name, out_layer)
     print("Made POINT event layer:", lyr_name)
 
@@ -309,3 +333,8 @@ for tbl in event_tables_lines:
     out_fc = os.path.join(gdb_path, arcpy.ValidateTableName(lyr_name + "_fc", gdb_path))
     arcpy.management.CopyFeatures(lyr_name, out_fc)
     print("Made LINE event layer:", lyr_name)
+
+
+desc = arcpy.Describe("Target_A_clip")
+print("Data Type: ", desc.dataType)
+print("Spatial Reference: ", desc.spatialReference.name)
