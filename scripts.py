@@ -9,7 +9,7 @@ workspace = arcpy.env.workspace
 arcpy.env.overwriteOutput = True  # can overwrite output datasets that already exist
 
 
-# function to list all data
+# function to list all data and store the path for further processing
 def features(workspace):
     data = []  # create a list to store data and path
     for dirpath, dirname, filenames in arcpy.da.Walk(workspace):
@@ -17,6 +17,7 @@ def features(workspace):
             data_path = os.path.join(dirpath, f)  # for each file in f, create path
             data.append(data_path)  # Store the data path in data
     return data  # return the full list of data paths found
+print("")
 
 
 data_shp = features(
@@ -24,8 +25,11 @@ data_shp = features(
 )  # calls the feature function to get all data and its path stored earlier
 
 # print all data and path
+print("Listing all data and their paths...")
 for data in data_shp:
     print(data)
+    print(arcpy.GetMessages())
+    print("")
 
 # Delete any gdb found and create a new one
 wkspace = arcpy.ListWorkspaces("", "FileGDB")  # LIST ALL GDB IN THE WORKSPACE
@@ -34,6 +38,7 @@ for gdb in wkspace:
         arcpy.management.Delete(gdb)  # if any gdb is found, it deletes
         print("Deleting existing gdb...")
         print(arcpy.GetMessages())
+        print("")
 
 # Creating a new gdb
 gdb_name = "Group2_Capstone"  # name of new gdb
@@ -80,6 +85,7 @@ data = [
     # "V4-1_LSD.shp",
     "Base_Waterbody_Polygon.shp",
     "Target_A",
+    "Airdrie_Roads.shp",
 ]
 
 for data_list in data:
@@ -114,19 +120,20 @@ for data_list in data:
     if desc.spatialReference.name == "Unknown":
         arcpy.DefineProjection_management(dataList_path, define_projection)
         print(arcpy.GetMessages())
+        print("")
 
     # project
     if desc.dataType in ["FeatureClass", "ShapeFile"]:
         arcpy.management.Project(dataList_path, projected_data, projection)
         arcpy.analysis.Clip(projected_data, studyarea_path, clipped_data)
         print(arcpy.GetMessages())
+        print("")
 
     elif desc.dataType == "RasterDataset":
         arcpy.management.ProjectRaster(
             dataList_path, projected_data, projection, "BILINEAR"
         )
-        # clip to study area
-        # arcpy.management.Clip(projected_data, "#", clipped_data, studyarea_path, "#", "ClippingGeometry", "MAINTAIN_EXTENT")
+
 
     elif desc.dataType == "Tin":
         # converting Lidar to contour
@@ -141,11 +148,17 @@ for data_list in data:
         arcpy.analysis.Clip(projected_data, studyarea_path, clipped_data)
 
         print(arcpy.GetMessages())
+        print("")
 
     # Delete internediate projected data
+    print("Deleting...")
     arcpy.management.Delete(projected_data)
+    print(arcpy.GetMessages())
+    print("")
 
     print(f"Successfully projected and clipped {data_list} = {clipped_data}")
+    print(arcpy.GetMessages())
+    print("")
 
 # creating a route [linear referencing]
 pipeline_fc = os.path.join(gdb_path, "Pipelines_GCS_NAD83_clip")  # path for pipeline
@@ -180,7 +193,8 @@ fc_gdb = arcpy.ListFeatureClasses()
 exclude_fc = {
     "pipelines_gcs_nad83_clip",  # the clipped pipe
     "pipeline_dissolve",  # dissolve output
-    "pipeline_route",  # route output
+    "pipeline_route", # route output
+      "Study_Area",  
 }
 include_fc = [fc for fc in fc_gdb if fc.lower() not in exclude_fc]
 for fc in include_fc:
