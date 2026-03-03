@@ -17,6 +17,8 @@ def features(workspace):
             data_path = os.path.join(dirpath, f)  # for each file in f, create path
             data.append(data_path)  # Store the data path in data
     return data  # return the full list of data paths found
+
+
 print("")
 
 
@@ -85,7 +87,7 @@ data = [
     # "V4-1_LSD.shp",
     "Base_Waterbody_Polygon.shp",
     "Target_A",
-    "Airdrie_Roads.shp",
+    # "Airdrie_Roads.shp",
 ]
 
 for data_list in data:
@@ -133,7 +135,6 @@ for data_list in data:
         arcpy.management.ProjectRaster(
             dataList_path, projected_data, projection, "BILINEAR"
         )
-
 
     elif desc.dataType == "Tin":
         # converting Lidar to contour
@@ -193,8 +194,8 @@ fc_gdb = arcpy.ListFeatureClasses()
 exclude_fc = {
     "pipelines_gcs_nad83_clip",  # the clipped pipe
     "pipeline_dissolve",  # dissolve output
-    "pipeline_route", # route output
-      "Study_Area",  
+    "pipeline_route",  # route output
+    "Study_Area",
 }
 include_fc = [fc for fc in fc_gdb if fc.lower() not in exclude_fc]
 for fc in include_fc:
