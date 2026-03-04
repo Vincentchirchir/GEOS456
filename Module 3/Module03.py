@@ -28,14 +28,14 @@ def messages():
 fclist=arcpy.ListFeatureClasses()
 
 #iterate through the workspace and print all feature classes to the interpreter
-##for dirnames,dirpath, filenames in arcpy.da.Walk(fclist):
-##    for fc in filenames:
-##        print("Feature class name: ", fc)
-##        fcDesc=arcpy.Describe(fc)
-##        print("Geometry: ", fcDesc.shapeType)
-##        print("Spatial Reference", fcDesc.spatialReference.name)
-##        print("Geographic or projected:", fcDesc.spatialReference.type)
-##      print("Units: ", fcDesc.)
+for dirnames,dirpath, filenames in arcpy.da.Walk(fclist):
+   for fc in filenames:
+       print("Feature class name: ", fc)
+       fcDesc=arcpy.Describe(fc)
+       print("Geometry: ", fcDesc.shapeType)
+       print("Spatial Reference", fcDesc.spatialReference.name)
+       print("Geographic or projected:", fcDesc.spatialReference.type)
+       #print("Units: ", fcDesc.)
 
 for fc in fclist:
     print("Feature class name: ", fc)
