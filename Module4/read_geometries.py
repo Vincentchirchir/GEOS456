@@ -15,20 +15,20 @@ import arcpy
 arcpy.env.workspace=r"C:\GEOS456\Module2\Data.gdb"
 arcpy.env.overwriteOutput=True
 
-#define a feature  class to extract the geometries from
-##fc="Crimes2009"
-##fc="BexarCountyBoundaries"
+# define a feature  class to extract the geometries from
+# #fc="Crimes2009"
+# #fc="BexarCountyBoundaries"
 
-###extract the XY of the input feature class using the SHAPE@XY token
-##scursor=arcpy.da.SearchCursor(fc, ["SHAPE@XY", "SHAPE@AREA"])
-##
-###Iterate through the feature and print all the XY to the interpreter
-##for row in scursor:
-##    x, y = row[0]
-##    print("Centroid = ", x, y)
-##
-##    Area=row[1]
-##    print("Area =", Area)
+# ##extract the XY of the input feature class using the SHAPE@XY token
+# #scursor=arcpy.da.SearchCursor(fc, ["SHAPE@XY", "SHAPE@AREA"])
+# #
+# ##Iterate through the feature and print all the XY to the interpreter
+# #for row in scursor:
+# #    x, y = row[0]
+# #    print("Centroid = ", x, y)
+# #
+# #    Area=row[1]
+# #    print("Area =", Area)
 
 
 fc="SchoolDistricts"
