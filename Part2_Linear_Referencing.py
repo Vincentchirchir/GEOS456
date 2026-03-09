@@ -1,13 +1,41 @@
 import arcpy
 import os  # python library for joining folders, getting filenames
 
+#workspace settings
+arcpy.env.overwriteOutput = True  # can overwrite output datasets that already exist
+arcpy.env.workspace = r"C:\Capstone\processing_data"  # Data path
+workspace = arcpy.env.workspace
+
+#projection settings
 projection = arcpy.SpatialReference("NAD 1983 CSRS 3TM 114")
 define_projection = arcpy.SpatialReference(3780)
 
-arcpy.env.workspace = r"C:\Capstone\processing_data"  # Data path
-workspace = arcpy.env.workspace
-arcpy.env.overwriteOutput = True  # can overwrite output datasets that already exist
+#geodatabase settings
+gdb_name = "Group2_Capstone"  # name of new gdb
+gdb_path = os.path.join(workspace, gdb_name + ".gdb")  # saving the full path of gdb
 
+#Study Area Settings
+study_area_section_name="V4-1_SEC.shp"
+study_area_field = "DESCRIPTOR"
+study_area_ATS = "SEC-01 TWP-027 RGE-29 MER-4"
+studyarea_path = os.path.join(gdb_path, "Study_Area")
+
+#Pipeline features settings
+pipeline_name = "Pipelines_GCS_NAD83.shp"
+route_id_field = "Route_ID"# field used as the route identifier
+route_id_value = "PIPE_01" # constant route ID assigned to the dissolved pipeline route
+
+#stations settings
+station_interval = "100 Meters"
+
+#user input data settings
+analysis_layers = [
+    "Subsurface_Lineaments__WebM.shp",
+    "glac_landform_ln_ll.shp",
+    "Base_Waterbody_Polygon.shp",
+    "Target_A",
+]
+input_layers = [pipeline_name] + analysis_layers
 
 # function to list all data and store the path for further processing
 def features(workspace):
@@ -17,10 +45,7 @@ def features(workspace):
             data_path = os.path.join(dirpath, f)  # for each file in f, create path
             data.append(data_path)  # Store the data path in data
     return data  # return the full list of data paths found
-
-
 print("")
-
 
 data_shp = features(
     workspace
@@ -43,54 +68,34 @@ for gdb in wkspace:
         print("")
 
 # Creating a new gdb
-gdb_name = "Group2_Capstone"  # name of new gdb
 arcpy.management.CreateFileGDB(
     workspace, gdb_name + ".gdb"
 )  # creates the gdb in workspace folder
-gdb_path = os.path.join(workspace, gdb_name + ".gdb")  # saving the full path of gdb
 print(arcpy.GetMessages())
 print("")
 
-# Creating Geodatabase Feature Datasets
-# fc_datasets = ["ATS", "Pipelines", "Features", "Classification"]
-# for fcdt in fc_datasets:
-#     print(f"Creating the {fcdt} feature dataset")
-#     arcpy.CreateFeatureDataset_management(gdb_path, fcdt, projection)
-#     print(f"{fcdt} successfull created!")
-#     print("")
-
 # identifying studying area
 study_area_section = next(
-    p for p in data_shp if os.path.basename(p).lower() == "V4-1_SEC.shp".lower()
+    p for p in data_shp if os.path.basename(p).lower() == study_area_section_name.lower()
 )  # Searches through the data_shp to find section
 
 # Create a temporary feature layer  of all section, before identifying the section we want
 section_layer = arcpy.MakeFeatureLayer_management(study_area_section, "sections_layer")
 
 # Create SQL function to select from the temporary layer
-delimfield = arcpy.AddFieldDelimiters(study_area_section, "DESCRIPTOR")
+delimfield = arcpy.AddFieldDelimiters(study_area_section, study_area_field)
+sql_query=f"{delimfield} = '{study_area_ATS}'"
 
 # Select features from sections_layer whose DESCRIPTOR equals that exact text
 arcpy.SelectLayerByAttribute_management(
-    section_layer, "NEW_SELECTION", delimfield + "= 'SEC-01 TWP-027 RGE-29 MER-4'"
+    section_layer, "NEW_SELECTION", sql_query
 )
 
-# create a study area and store in gdb
-studyarea_path = os.path.join(gdb_path, "Study_Area")
+# project study area and store in gdb
 arcpy.management.Project("sections_layer", studyarea_path, projection)
 
 # clip needed data to study area
-data = [
-    "Pipelines_GCS_NAD83.shp",
-    "Subsurface_Lineaments__WebM.shp",
-    "glac_landform_ln_ll.shp",
-    # "V4-1_LSD.shp",
-    "Base_Waterbody_Polygon.shp",
-    "Target_A",
-    # "Airdrie_Roads.shp",
-]
-
-for data_list in data:
+for data_list in input_layers:
     dataList_path = next(
         p for p in data_shp if os.path.basename(p).lower() == data_list.lower()
     )  # Finds the full path of that shapefile in your workspace (case-insensitive).
@@ -162,10 +167,10 @@ for data_list in data:
     print("")
 
 # creating a route [linear referencing]
-pipeline_fc = os.path.join(gdb_path, "Pipelines_GCS_NAD83_clip")  # path for pipeline
+pipeline_base = os.path.splitext(pipeline_name)[0]
+pipeline_fc = os.path.join(gdb_path, f"{pipeline_base}_clip")
 
 # create a new field for route ID if the data do not have
-route_id_field = "Route_ID"
 if route_id_field not in [
     f.name for f in arcpy.ListFields(pipeline_fc)
 ]:  # check if the field RouteID exists in pipeline data
@@ -175,7 +180,7 @@ if route_id_field not in [
 
 # calculate the new field
 arcpy.management.CalculateField(
-    pipeline_fc, route_id_field, "'PIPE_01'", "PYTHON3"
+    pipeline_fc, route_id_field, f"'{route_id_value}'", "PYTHON3"
 )  # CALCULATES A CONSTATNT VALUE FROM PIPE_01 for every pipe
 
 # Dissolve pipeline to one feature or one per routeID
@@ -188,6 +193,58 @@ arcpy.lr.CreateRoutes(
     pipeline_diss, route_id_field, routes_fc, "LENGTH"
 )  # LENGTH tells ArcGIS to create measures from 0 to total length coz we dont have starting and ending distance
 
+# Calculating Chainage field
+calculate_field = r"""
+def chain(m):
+    m=int(round(float(m)))
+    km=m//1000
+    remainder=m % 1000
+    return f"{km}+{remainder:03d}"
+
+"""
+
+# Generate points along the route
+station_points = os.path.join(gdb_path, "Station_Points")
+arcpy.management.GeneratePointsAlongLines(
+    routes_fc,
+    station_points,
+    "DISTANCE",
+    Distance=station_interval,
+    Include_End_Points="END_POINTS",
+)
+
+# Locate station points along the route
+station_table = os.path.join(gdb_path, "Station_Events")
+arcpy.lr.LocateFeaturesAlongRoutes(
+    in_features=station_points,
+    in_routes=routes_fc,
+    route_id_field=route_id_field,
+    radius_or_tolerance="5 Meters",
+    out_table=station_table,
+    out_event_properties=f"{route_id_field} POINT MEAS",
+    distance_field="DISTANCE",
+)
+
+# Adding chainage labels to station table
+if "Chainage" not in [f.name for f in arcpy.ListFields(station_table)]:
+    arcpy.management.AddField(station_table, "Chainage", "TEXT", field_length=20)
+
+arcpy.management.CalculateField(
+    station_table, "Chainage", "chain(!MEAS!)", "PYTHON3", calculate_field
+)
+
+# Make station event layer
+station_lyr = "Station_Events_lyr"
+arcpy.lr.MakeRouteEventLayer(
+    in_routes=routes_fc,
+    route_id_field=route_id_field,
+    in_table=station_table,
+    in_event_properties=f"{route_id_field} POINT MEAS",
+    out_layer=station_lyr,
+)
+station_fc = os.path.join(gdb_path, "Station_Events_fc")
+arcpy.management.CopyFeatures(station_lyr, station_fc)
+
 # excluding features here coz pipeline is the main route we are checking it interscts with which feature
 arcpy.env.workspace = gdb_path
 fc_gdb = arcpy.ListFeatureClasses()
@@ -195,7 +252,9 @@ exclude_fc = {
     "pipelines_gcs_nad83_clip",  # the clipped pipe
     "pipeline_dissolve",  # dissolve output
     "pipeline_route",  # route output
-    "Study_Area",
+    "study_area",
+    "station_points",
+    "station_events_fc",
 }
 include_fc = [fc for fc in fc_gdb if fc.lower() not in exclude_fc]
 for fc in include_fc:
@@ -206,7 +265,8 @@ intersect_points = []  # it will store points where it intersect with pipeline
 overlap = []  # it will store where pipeline overlaps other features
 
 for f in include_fc:
-    desc = arcpy.Describe(f)  # describe features that will be inlcuded
+    fc_path = os.path.join(gdb_path, f)
+    desc = arcpy.Describe(fc_path)  # describe features that will be inlcuded
     geom = desc.shapeType
 
     base_name = os.path.basename(f)
@@ -214,7 +274,7 @@ for f in include_fc:
     out_point = os.path.join(
         gdb_path, arcpy.ValidateTableName(base_name + "_point", gdb_path)
     )
-    arcpy.analysis.Intersect([pipeline_diss, f], out_point, output_type="POINT")
+    arcpy.analysis.Intersect([pipeline_diss, fc_path], out_point, output_type="POINT")
     intersect_points.append(out_point)
     print(f"Point Intersect created: {out_point}")
 
@@ -223,7 +283,7 @@ for f in include_fc:
             gdb_path, arcpy.ValidateTableName(base_name + "_overlap", gdb_path)
         )
         arcpy.analysis.Intersect(
-            [pipeline_diss, f], out_overlap, "", "", output_type="LINE"
+            [pipeline_diss, fc_path], out_overlap, "", "", output_type="LINE"
         )
         overlap.append(out_overlap)
         print(f"Overlap Created: {out_overlap}")
@@ -246,7 +306,7 @@ for point_fc in intersect_points:
         radius_or_tolerance="5 Meters",
         out_table=out_table,
         out_event_properties=f"{route_id_field} POINT MEAS",
-        route_locations="",
+        # route_locations="",
         distance_field="DISTANCE",
     )
     event_tables_points.append(out_table)
@@ -275,15 +335,6 @@ for overlaps in overlap:
     print(arcpy.GetMessages())
 
 # Chainage
-calculate_field = r"""
-def chain(m):
-    m=int(round(float(m)))
-    km=m//1000
-    remainder=m % 1000
-    return f"{km} + {remainder:03d}"
-
-"""
-
 # chainage for point
 for table in event_tables_points:
     if "Chainage" not in [f.name for f in arcpy.ListFields(table)]:
@@ -348,8 +399,3 @@ for tbl in event_tables_lines:
     out_fc = os.path.join(gdb_path, arcpy.ValidateTableName(lyr_name + "_fc", gdb_path))
     arcpy.management.CopyFeatures(lyr_name, out_fc)
     print("Made LINE event layer:", lyr_name)
-
-
-desc = arcpy.Describe("Target_A_clip")
-print("Data Type: ", desc.dataType)
-print("Spatial Reference: ", desc.spatialReference.name)
