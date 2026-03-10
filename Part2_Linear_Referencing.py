@@ -229,8 +229,11 @@ def locate_features(in_features, in_routes, route_id_field, out_table, out_event
         # Adding chainage labels to station table
         if "Chainage" not in [f.name for f in arcpy.ListFields(station_table)]:
             arcpy.management.AddField(station_table, "Chainage", "TEXT", field_length=20)
-        arcpy.management.CalculateField(
-            station_table, "Chainage", "chain(!MEAS!)", "PYTHON3", calculate_field
+        arcpy.management.CalculateField(station_table, 
+                                        "Chainage", 
+                                        "chain(!MEAS!)", 
+                                        "PYTHON3", 
+                                        calculate_field
         )
         return out_table
 
@@ -245,7 +248,6 @@ station_table = locate_features(
         # Make station event layer
 station_lyr = "Station_Events_lyr"
 arcpy.lr.MakeRouteEventLayer(
-
     in_routes=routes_fc,
     route_id_field=route_id_field,
     in_table=station_table,
