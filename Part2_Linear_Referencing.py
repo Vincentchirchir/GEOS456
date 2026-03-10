@@ -1,10 +1,12 @@
 import arcpy
 import os  # python library for joining folders, getting filenames
+import shutil
 
 #workspace settings
 arcpy.env.overwriteOutput = True  # can overwrite output datasets that already exist
 arcpy.env.workspace = r"C:\Capstone\processing_data"  # Data path
 workspace = arcpy.env.workspace
+aprx_path=r"C:\Capstone\Capstone_Project.aprx"
 
 #projection settings
 projection = arcpy.SpatialReference("NAD 1983 CSRS 3TM 114")
@@ -212,36 +214,44 @@ arcpy.management.GeneratePointsAlongLines(
     Distance=station_interval,
     Include_End_Points="END_POINTS",
 )
+def locate_features(in_features, in_routes, route_id_field, out_table, out_event_properties, radius_or_tolerance='5 Meters', distance_field="DISTANCE"):
+        # Locate station points along the route
+        
+        arcpy.lr.LocateFeaturesAlongRoutes(
+            in_features=in_features,
+            in_routes=in_routes,
+            route_id_field=route_id_field,
+            radius_or_tolerance=radius_or_tolerance,
+            out_table=out_table,
+            out_event_properties=out_event_properties,
+            distance_field=distance_field,
+        )
+        # Adding chainage labels to station table
+        if "Chainage" not in [f.name for f in arcpy.ListFields(station_table)]:
+            arcpy.management.AddField(station_table, "Chainage", "TEXT", field_length=20)
+        arcpy.management.CalculateField(
+            station_table, "Chainage", "chain(!MEAS!)", "PYTHON3", calculate_field
+        )
+        return out_table
 
-# Locate station points along the route
 station_table = os.path.join(gdb_path, "Station_Events")
-arcpy.lr.LocateFeaturesAlongRoutes(
+station_table = locate_features(
     in_features=station_points,
     in_routes=routes_fc,
     route_id_field=route_id_field,
-    radius_or_tolerance="5 Meters",
     out_table=station_table,
-    out_event_properties=f"{route_id_field} POINT MEAS",
-    distance_field="DISTANCE",
-)
-
-# Adding chainage labels to station table
-if "Chainage" not in [f.name for f in arcpy.ListFields(station_table)]:
-    arcpy.management.AddField(station_table, "Chainage", "TEXT", field_length=20)
-
-arcpy.management.CalculateField(
-    station_table, "Chainage", "chain(!MEAS!)", "PYTHON3", calculate_field
-)
-
-# Make station event layer
+    out_event_properties=f"{route_id_field} POINT MEAS"
+    )
+        # Make station event layer
 station_lyr = "Station_Events_lyr"
 arcpy.lr.MakeRouteEventLayer(
+
     in_routes=routes_fc,
     route_id_field=route_id_field,
     in_table=station_table,
     in_event_properties=f"{route_id_field} POINT MEAS",
     out_layer=station_lyr,
-)
+    )
 station_fc = os.path.join(gdb_path, "Station_Events_fc")
 arcpy.management.CopyFeatures(station_lyr, station_fc)
 
@@ -299,15 +309,12 @@ for point_fc in intersect_points:
         arcpy.ValidateTableName(os.path.basename(point_fc) + "_event", gdb_path),
     )
 
-    arcpy.lr.LocateFeaturesAlongRoutes(
+    out_table=locate_features(
         in_features=point_fc,
         in_routes=routes_fc,
         route_id_field=route_id_field,
-        radius_or_tolerance="5 Meters",
         out_table=out_table,
         out_event_properties=f"{route_id_field} POINT MEAS",
-        # route_locations="",
-        distance_field="DISTANCE",
     )
     event_tables_points.append(out_table)
     print("Created event table: ", out_table)
@@ -321,14 +328,13 @@ for overlaps in overlap:
     )
     print("Overlap shapeType:", arcpy.Describe(overlaps).shapeType)
 
-    arcpy.lr.LocateFeaturesAlongRoutes(
+    out_table_overlap=locate_features(
         in_features=overlaps,
         in_routes=routes_fc,
         route_id_field=route_id_field,
-        radius_or_tolerance="20 Meters",
         out_table=out_table_overlap,
         out_event_properties=f"{route_id_field} LINE FMEAS TMEAS",
-        distance_field="DISTANCE",
+
     )
     event_tables_lines.append(out_table_overlap)
     print("Overlap Event Table: ", out_table_overlap)
@@ -399,3 +405,63 @@ for tbl in event_tables_lines:
     out_fc = os.path.join(gdb_path, arcpy.ValidateTableName(lyr_name + "_fc", gdb_path))
     arcpy.management.CopyFeatures(lyr_name, out_fc)
     print("Made LINE event layer:", lyr_name)
+
+# APRX SETUP
+template_aprx = r"C:\Capstone\Alignmentsheet\Alignmentsheet.aprx"  
+output_aprx = aprx_path
+
+if os.path.exists(output_aprx):
+    os.remove(output_aprx)
+
+shutil.copy(template_aprx, output_aprx)
+
+aprx = arcpy.mp.ArcGISProject(output_aprx)
+
+# CREATE OR GET MAP
+map_name = "Capstone Map"
+
+existing_maps = aprx.listMaps(map_name)
+if existing_maps:
+    m = existing_maps[0]
+else:
+    m = aprx.createMap(map_name)
+
+# ADD DATA
+layers_to_add = [
+    os.path.join(gdb_path, "Study_Area"),
+    os.path.join(gdb_path, "Pipeline_Route"),
+    os.path.join(gdb_path, "Station_Events_fc"),
+    os.path.join(gdb_path, "Base_Waterbody_Polygon_clip"),
+    os.path.join(gdb_path, "Base_Waterbody_Polygon_clip_point_event_lyr_fc"),
+    os.path.join(gdb_path, "glac_landform_ln_ll_clip"),
+    os.path.join(gdb_path, "glac_landform_ln_ll_clip_point_event_lyr_fc"),
+    os.path.join(gdb_path, "Subsurface_Lineaments__WebM_clip"),
+    os.path.join(gdb_path, "Subsurface_Lineaments__WebM_clip_point_event_lyr_fc"),
+]
+
+for lyr in layers_to_add:
+    if arcpy.Exists(lyr):
+        m.addDataFromPath(lyr)
+        print(f"Added: {lyr}")
+    else:
+        print(f"Missing: {lyr}")
+
+#CONNECT LAYOUT MAP FRAME
+layouts = aprx.listLayouts("Alignment_Sheet")
+if layouts:
+    layout = layouts[0]
+
+    mapframes = layout.listElements("MAPFRAME_ELEMENT", "Main Map Frame")
+    if mapframes:
+        mf = mapframes[0]
+        mf.map = m
+
+        route_layers = m.listLayers("Pipeline_Route")
+        if route_layers:
+            mf.camera.setExtent(mf.getLayerExtent(route_layers[0], False, True))
+
+
+aprx.save()
+del aprx
+
+print(f"Project saved successfully: {output_aprx}")
