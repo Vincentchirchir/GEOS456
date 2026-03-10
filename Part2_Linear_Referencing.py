@@ -213,6 +213,14 @@ arcpy.management.GeneratePointsAlongLines(
     Include_End_Points="END_POINTS",
 )
 
+def locatefeatures():
+    in_features=gdb_path
+    in_routes=routes_fc
+    route_id_field=route_id_field
+    radius_or_tolerance="10 Meters"
+    out_table=station_table
+
+
 # Locate station points along the route
 station_table = os.path.join(gdb_path, "Station_Events")
 arcpy.lr.LocateFeaturesAlongRoutes(
