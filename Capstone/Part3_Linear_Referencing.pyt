@@ -506,13 +506,8 @@ def create_stationing_source_line(
     start_measure=None,
     end_measure=None,
 ):
-    """
-    Returns the line feature class on which points should be generated.
-    If no end_measure is provided, use the full route.
-    If end_measure is provided, create a route event segment and return that segment.
-    """
 
-    # No range limitation: use full route
+    # if there is no range limitation use full route
     if end_measure is None:
         return route_fc
 
@@ -552,7 +547,7 @@ def create_stationing_source_line(
 
 def remove_duplicate_station_measures(station_points, station_table, measure_field="MEAS"):
 
-    #Find duplicate StationIDs in station_table based on MEAS ---
+    #Find duplicate StationIDs in station_table based on MEAS
     seen_measures = set()
     duplicate_station_ids = []
 
@@ -570,13 +565,13 @@ def remove_duplicate_station_measures(station_points, station_table, measure_fie
 
     duplicate_station_ids_set = set(duplicate_station_ids)
 
-    #Delete duplicate rows from station_table ---
+    #Delete duplicate rows from station_table
     with arcpy.da.UpdateCursor(station_table, ["StationID"]) as cursor:
         for row in cursor:
             if row[0] in duplicate_station_ids_set:
                 cursor.deleteRow()
 
-    #Delete duplicate points from station_points ---
+    #Delete duplicate points from station_points
     with arcpy.da.UpdateCursor(station_points, ["StationID"]) as cursor:
         for row in cursor:
             if row[0] in duplicate_station_ids_set:
@@ -642,8 +637,8 @@ class GenerateStationing(object):
             datatype="GPFeatureLayer",
             parameterType="Optional",
             direction="Input",
-            #multiValue=True,
         )
+        analysis_layers.multiValue=True
 
         start_measure = arcpy.Parameter(
             displayName="Start Measure",
@@ -665,9 +660,9 @@ class GenerateStationing(object):
         try:
             aprx = arcpy.mp.ArcGISProject("CURRENT")
             active_map = aprx.activeMap
+            polyline_layers = []
 
             if active_map:
-                polyline_layers = []
                 for lyr in active_map.listLayers():
                     if lyr.isFeatureLayer:
                         try:
@@ -678,7 +673,8 @@ class GenerateStationing(object):
                                 polyline_layers.append(lyr.name)
                         except:
                             pass
-            if polyline_layers:            
+
+            if polyline_layers:
                 input_line.filter.list = polyline_layers
         except:
             pass
@@ -869,7 +865,7 @@ class GenerateStationing(object):
                                 if hasattr(in_desc, "catalogPath") and hasattr(lyr_desc, "catalogPath"):
                                     if os.path.normpath(in_desc.catalogPath) == os.path.normpath(lyr_desc.catalogPath):
                                         analysis_layers.setWarningMessage(
-                                            "Input route layer is also included in analysis layers. It will be skipped during processing."
+                                            "Input route layer is also included in analysis layers."
                                         )
                             except:
                                 pass
@@ -898,12 +894,11 @@ class GenerateStationing(object):
         if parameters[4].value is not None:
             end_measure=float(parameters[4].value)
             
-        analysis_layers_text = parameters[5].valueAsText
-
         tolerance = "1 Meters"
-        if len(parameters) > 6 and parameters[6].valueAsText:
-            tolerance = parameters[6].valueAsText
+        if len(parameters) > 6 and parameters[5].valueAsText:
+            tolerance = parameters[5].valueAsText
 
+        analysis_layers_text = parameters[6].valueAsText
         analysis_layers = []
         if analysis_layers_text:
             analysis_layers = analysis_layers_text.split(";")
@@ -914,6 +909,7 @@ class GenerateStationing(object):
             input_line_fc=input_line_fc,
             output_gdb=output_gdb,
             station_interval=station_interval,
+            tolerance=tolerance,
             start_measure=start_measure,
             end_measure=end_measure,
         )
@@ -992,3 +988,43 @@ class GenerateStationing(object):
 
         else:
             messages.addMessage("No analysis layers provided. Skipping intersections and overlaps.")
+
+        try:
+            aprx = arcpy.mp.ArcGISProject("CURRENT")
+            active_map = aprx.activeMap
+
+            if active_map:
+
+                # Add route
+                route_layer = active_map.addDataFromPath(outputs["route_fc"])
+
+                # Add station points
+                station_layer = active_map.addDataFromPath(outputs["station_points"])
+
+                # Route symbology
+                sym = route_layer.symbology
+                if sym.renderer.type == "SimpleRenderer":
+                    sym.renderer.symbol.color = {'RGB': [255, 0, 0, 100]}
+                    sym.renderer.symbol.width = 4
+                route_layer.symbology = sym
+
+                # Station symbology
+                sym = station_layer.symbology
+                if sym.renderer.type == "SimpleRenderer":
+                    sym.renderer.symbol.color = {'RGB': [0, 0, 255, 100]}
+                    sym.renderer.symbol.size = 6
+                station_layer.symbology = sym
+
+                # Zoom to route
+                view = aprx.activeView
+                if hasattr(view, "camera"):
+                    extent = arcpy.Describe(outputs["route_fc"]).extent
+                    view.camera.setExtent(extent)
+                
+                #Set labels
+                station_layer.showLabels = True
+                for lbl in station_layer.listLabelClasses():
+                    lbl.expression = "$feature.Chainage"
+
+        except Exception as e:
+            arcpy.AddWarning(f"Could not update map display: {e}")
