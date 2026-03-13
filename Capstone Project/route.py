@@ -1,6 +1,7 @@
 import arcpy
 import os
 
+#This function prepares a route for route creation
 def create_route_with_measure_system(
     input_line_fc,
     out_gdb,
@@ -76,7 +77,9 @@ def calc_to_m(shape_length, start_m):
         "base_name": base_name,
     }
 
-
+#The following function prepares for lines that station will be generated on
+# Coz ecause sometimes you do not want to generate stations on the entire route exactly as-is. 
+# You may want trimming based on start_measure or trimming based on end_measure
 def create_stationing_source_line(
     route_fc,
     out_gdb,
