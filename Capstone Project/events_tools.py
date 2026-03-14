@@ -90,6 +90,22 @@ def locate_intersections_and_overlaps(
         else:
             arcpy.management.Delete(out_table)
 
+    for overlap_fc in line_overlaps:
+        overlap_name=arcpy.ValidateTableName(
+            (os.path.basename(overlap_fc))[0], out_gdb)
+        
+        out_table=os.path.join(out_gdb, f"{overlap_name}_event")
+
+        arcpy.lr.LocateFeaturesAlongRoutes(
+            in_features=overlap_fc,
+            in_routes=route_fc,
+            route_id_field=route_id_field,
+            out_table=out_table,
+            out_event_properties=f"{route_id_field} LINE FMEAS TMEAS",
+            radius_or_tolerance=tolerance,
+            distance_field="DISTANCE",
+        )
+
     return{
         "point_event_tables": point_event_tables,
         "line_event_tables": line_event_tables,
@@ -127,4 +143,79 @@ def add_chainage_to_event_tables(
 
         #the following for loop, loops through the line event tables.
         #This are the ones created from from overlaps.
-        #This are the one woth To and Fro Measures instead of single measure like points
+        #This are the one with To and Fro Measures instead of single measure like points
+        for table in line_event_tables:
+            existing_fields=[f.name for f in arcpy.ListFields(table)]
+
+            if "FromCh" not in existing_fields:
+                arcpy.management.AddField(table, "FromCh", "TEXT", field_length=20)
+
+            if "ToCh" not in existing_fields:
+                arcpy.management.AddField(table, "ToCh", "TEXT", field_length=20)
+
+            if "ChainageRange" not in existing_fields:
+                arcpy.management.AddField(table, "ChainageRange", "TEXT", field_length=30)
+
+            arcpy.management.CalculateField(table, "FromCh", "chain(!FMEAS!)", "PYTHON3", code_block)
+
+            arcpy.management.CalculateField(table, "ToCh", "chain(!TMEAS!)", "PYTHON3", code_block)
+
+            arcpy.management.CalculateField(table, "ChainageRange", "!FromCh! + ' - ' + !ToCh!", "PYTHON3")
+
+#The foloowing function is a step where event tables above becomes features classes again
+#Coz at first we had raw intersection/overlap geometries 
+#Then event tables with MEAS, FMEAS, TMEAS
+#Then we added field and calculated the fields including chainage  to those tables
+#Now we use those tables plus the route to create a feature class from those tables
+def make_event_layers_from_tables(
+        route_fc,
+        route_id_field,
+        output_gdb,
+        point_event_tables,
+        line_event_tables,
+):
+    point_event_features=[]
+    line_event_features=[]
+
+    for table in point_event_tables:
+        base_name=arcpy.ValidateTableName(
+            os.path.splitext(os.path.basename(table))[0], output_gdb
+        )
+
+        out_layer=f"{base_name}_layer"
+        out_fc=os.path.join(output_gdb, f"{base_name}_intersect")
+
+        arcpy.lr.MakeRouteEventLayer(
+            in_routes=route_fc,
+            route_id_field=route_id_field,
+            in_table=table,
+            in_event_properties=f"{route_id_field} POINT MEAS",
+            out_layer=out_layer,
+        )
+
+        arcpy.management.CopyFeatures(out_layer, out_fc)
+        point_event_features.append(out_fc)
+
+    for table in line_event_tables:
+        base_name=arcpy.ValidateTableName(
+            os.path.splitext(os.path.basename(table))[0], output_gdb
+        )
+
+        out_layer=f"{base_name}_layer"
+        out_fc=os.path.join(output_gdb, f"{base_name}_overlap")
+
+        arcpy.lr.MakeRouteEventLayer(
+            in_routes=route_fc,
+            route_id_field=route_id_field,
+            in_table=table,
+            in_event_properties=f"{route_id_field} LINE FMEAS TMEAS",
+            out_layer=out_layer
+        )
+
+        arcpy.management.CopyFeatures(out_layer, out_fc)
+        line_event_features.append(out_fc)
+
+    return{
+        "point_event_features":point_event_features,
+        "line_event_features":line_event_features
+    }
