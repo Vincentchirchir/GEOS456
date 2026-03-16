@@ -1,4 +1,4 @@
-#route_utils.py
+# route_utils.py
 import arcpy
 import os
 
@@ -38,10 +38,7 @@ def create_route_with_measure_system(
         arcpy.management.AddField(route_diss, "ToM", "DOUBLE")
 
     arcpy.management.CalculateField(
-        route_diss,
-        "FromM",
-        str(float(start_measure)),
-        "PYTHON3"
+        route_diss, "FromM", str(float(start_measure)), "PYTHON3"
     )
 
     code_block = """
@@ -54,17 +51,12 @@ def calc_to_m(shape_length, start_m):
         "ToM",
         f"calc_to_m(!shape.length!, {float(start_measure)})",
         "PYTHON3",
-        code_block
+        code_block,
     )
 
     route_fc = os.path.join(output_gdb, base_name + "_route")
     arcpy.lr.CreateRoutes(
-        route_diss,
-        route_id_field,
-        route_fc,
-        "TWO_FIELDS",
-        "FromM",
-        "ToM"
+        route_diss, route_id_field, route_fc, "TWO_FIELDS", "FromM", "ToM"
     )
 
     if arcpy.Exists(line_copy_fc):
@@ -100,13 +92,17 @@ def create_stationing_source_line(
 
     seg_fields = [f.name for f in arcpy.ListFields(segment_table)]
     if route_id_field not in seg_fields:
-        arcpy.management.AddField(segment_table, route_id_field, "TEXT", field_length=50)
+        arcpy.management.AddField(
+            segment_table, route_id_field, "TEXT", field_length=50
+        )
     if "FMEAS" not in seg_fields:
         arcpy.management.AddField(segment_table, "FMEAS", "DOUBLE")
     if "TMEAS" not in seg_fields:
         arcpy.management.AddField(segment_table, "TMEAS", "DOUBLE")
 
-    with arcpy.da.InsertCursor(segment_table, [route_id_field, "FMEAS", "TMEAS"]) as cur:
+    with arcpy.da.InsertCursor(
+        segment_table, [route_id_field, "FMEAS", "TMEAS"]
+    ) as cur:
         cur.insertRow([route_id_value, float(start_measure), float(end_measure)])
 
     segment_layer = f"{base_name}_segment_lyr"
@@ -124,14 +120,18 @@ def create_stationing_source_line(
 
     arcpy.management.CopyFeatures(segment_layer, segment_fc)
     return segment_fc
-#stationing_utils.py
+
+
+# stationing_utils.py
 import arcpy
 import os
 
 from route_utils import create_route_with_measure_system, create_stationing_source_line
 
 
-def remove_duplicate_station_measures(station_points, station_table, measure_field="MEAS"):
+def remove_duplicate_station_measures(
+    station_points, station_table, measure_field="MEAS"
+):
     seen_measures = set()
     duplicate_station_ids = []
 
@@ -176,7 +176,7 @@ def join_station_chainage_to_points(station_points, station_table):
         in_field="StationID",
         join_table=station_table,
         join_field="StationID",
-        fields=["MEAS", "Chainage"]
+        fields=["MEAS", "Chainage"],
     )
 
 
@@ -227,10 +227,7 @@ def create_route_and_stationing(
         arcpy.management.AddField(station_points, "StationID", "LONG")
 
     arcpy.management.CalculateField(
-        station_points,
-        "StationID",
-        "!OBJECTID!",
-        "PYTHON3"
+        station_points, "StationID", "!OBJECTID!", "PYTHON3"
     )
 
     station_table = os.path.join(output_gdb, base_name + "_station_events")
@@ -264,9 +261,7 @@ def chain(val):
     )
 
     remove_duplicate_station_measures(
-        station_points=station_points,
-        station_table=station_table,
-        measure_field="MEAS"
+        station_points=station_points, station_table=station_table, measure_field="MEAS"
     )
 
     return {
@@ -276,7 +271,9 @@ def chain(val):
         "station_table": station_table,
         "route_id_field": route_id_field,
     }
-#event_utils.py
+
+
+# event_utils.py
 import arcpy
 import os
 
@@ -306,7 +303,9 @@ def create_intersections_and_overlaps(route_fc, output_gdb, analysis_layers):
 
             if shape_type in ["Polyline", "Polygon"]:
                 overlap_out = os.path.join(output_gdb, f"{layer_name}_overlap")
-                arcpy.analysis.Intersect([route_fc, lyr], overlap_out, output_type="LINE")
+                arcpy.analysis.Intersect(
+                    [route_fc, lyr], overlap_out, output_type="LINE"
+                )
 
                 if int(arcpy.management.GetCount(overlap_out)[0]) > 0:
                     line_overlaps.append(overlap_out)
@@ -323,12 +322,7 @@ def create_intersections_and_overlaps(route_fc, output_gdb, analysis_layers):
 
 
 def locate_intersections_and_overlaps(
-    route_fc,
-    route_id_field,
-    output_gdb,
-    tolerance,
-    point_intersections,
-    line_overlaps
+    route_fc, route_id_field, output_gdb, tolerance, point_intersections, line_overlaps
 ):
     point_event_tables = []
     line_event_tables = []
@@ -477,6 +471,8 @@ def make_event_layers_from_tables(
         "point_event_features": point_event_features,
         "line_event_features": line_event_features,
     }
+
+
 # map_utils.py
 import arcpy
 
@@ -494,13 +490,13 @@ def add_outputs_to_current_map(outputs):
 
         sym = route_layer.symbology
         if sym.renderer.type == "SimpleRenderer":
-            sym.renderer.symbol.color = {'RGB': [255, 0, 0, 100]}
+            sym.renderer.symbol.color = {"RGB": [255, 0, 0, 100]}
             sym.renderer.symbol.width = 4
         route_layer.symbology = sym
 
         sym = station_layer.symbology
         if sym.renderer.type == "SimpleRenderer":
-            sym.renderer.symbol.color = {'RGB': [0, 0, 255, 100]}
+            sym.renderer.symbol.color = {"RGB": [0, 0, 255, 100]}
             sym.renderer.symbol.size = 6
         station_layer.symbology = sym
 
@@ -515,6 +511,8 @@ def add_outputs_to_current_map(outputs):
 
     except Exception as e:
         arcpy.AddWarning(f"Could not update map display: {e}")
+
+
 # Now your .pyt becomes much smaller
 
 # At the top of GenerateStationing.pyt:
@@ -527,7 +525,10 @@ tool_folder = os.path.dirname(__file__)
 if tool_folder not in sys.path:
     sys.path.append(tool_folder)
 
-from stationing_utils import create_route_and_stationing, join_station_chainage_to_points
+from stationing_utils import (
+    create_route_and_stationing,
+    join_station_chainage_to_points,
+)
 from event_utils import (
     create_intersections_and_overlaps,
     locate_intersections_and_overlaps,
@@ -547,6 +548,7 @@ from map_utils import add_outputs_to_current_map
 # updateMessages
 
 # And simplify execute() to mainly orchestrate.
+
 
 # Your new execute() logic
 def execute(self, parameters, messages):
@@ -588,8 +590,7 @@ def execute(self, parameters, messages):
     messages.addMessage(f"Station event table created: {outputs['station_table']}")
 
     join_station_chainage_to_points(
-        station_points=outputs["station_points"],
-        station_table=outputs["station_table"]
+        station_points=outputs["station_points"], station_table=outputs["station_table"]
     )
     messages.addMessage("Chainage joined to station points.")
 
@@ -624,6 +625,8 @@ def execute(self, parameters, messages):
             line_event_tables=event_outputs["line_event_tables"],
         )
     else:
-        messages.addMessage("No analysis layers provided. Skipping intersections and overlaps.")
+        messages.addMessage(
+            "No analysis layers provided. Skipping intersections and overlaps."
+        )
 
     add_outputs_to_current_map(outputs)

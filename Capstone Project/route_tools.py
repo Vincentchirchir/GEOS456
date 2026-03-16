@@ -1,7 +1,8 @@
 import arcpy
 import os
 
-#This function prepares a route for route creation
+
+# This function prepares a route for route creation
 def create_route_with_measure_system(
     input_line_fc,
     out_gdb,
@@ -26,7 +27,12 @@ def create_route_with_measure_system(
         arcpy.management.AddField(line_copy_fc, route_id_field, "TEXT", field_length=50)
 
     # calculate field so that the route will have the same route attributes. In this case the attribute has been set to ROUTE_01. So the the column will have ROUTE_01 from start to end
-    arcpy.management.CalculateField(line_copy_fc, f"'{route_id_value}'", "PYTHON3")
+    arcpy.management.CalculateField(
+        in_table=line_copy_fc,
+        field=route_id_field,
+        expression=f"'{route_id_value}'",
+        expression_type="PYTHON3",
+    )
 
     # dissolving the line into one line incase if it is broken (This one applies only to one line. If you have a multiple lines and you want to treat them separately, then dissolve will not be used)
     route_diss = os.path.join(out_gdb, base_name + "_dissolve")
@@ -51,7 +57,7 @@ def calc_to_m(shape_length, start_m):
     arcpy.management.CalculateField(
         route_diss,
         "ToM",
-        f"calc_to_m(shape.length!, {float(start_measure)})",
+        f"calc_to_m(!shape.length!, {float(start_measure)})",
         "PYTHON3",
         code_block,
     )
@@ -77,8 +83,9 @@ def calc_to_m(shape_length, start_m):
         "base_name": base_name,
     }
 
-#The following function prepares for lines that station will be generated on
-# Coz ecause sometimes you do not want to generate stations on the entire route exactly as-is. 
+
+# The following function prepares for lines that station will be generated on
+# Coz ecause sometimes you do not want to generate stations on the entire route exactly as-is.
 # You may want trimming based on start_measure or trimming based on end_measure
 def create_stationing_source_line(
     route_fc,
@@ -94,34 +101,38 @@ def create_stationing_source_line(
     ):  # Here we are telling the script if the user does not provide the end measure, just produce the intervals from the specified start to the end of the line coz there is not end specified
         return route_fc
 
-    segment_table=os.path.join(out_gdb, f"{base_name}_segement_event")
+    segment_table = os.path.join(out_gdb, f"{base_name}_segment_event")
     if arcpy.Exists(segment_table):
         arcpy.management.Delete(segment_table)
     arcpy.management.CreateTable(out_gdb, f"{base_name}_segment_event")
 
-    seg_fields=[f.name for f in arcpy.ListFields(segment_table)]
+    seg_fields = [f.name for f in arcpy.ListFields(segment_table)]
     if route_id_field not in seg_fields:
-        arcpy.management.AddField(segment_table, route_id_field, "TEXT", field_length=50)
+        arcpy.management.AddField(
+            segment_table, route_id_field, "TEXT", field_length=50
+        )
     if "FMEAS" not in seg_fields:
         arcpy.management.AddField(segment_table, "FMEAS", "DOUBLE")
     if "TMEAS" not in seg_fields:
         arcpy.management.AddField(segment_table, "TMEAS", "DOUBLE")
-    
-    with arcpy.da.InsertCursor(segment_table, [route_id_field, "FMEAS", "TMEAS"]) as cursor:
+
+    with arcpy.da.InsertCursor(
+        segment_table, [route_id_field, "FMEAS", "TMEAS"]
+    ) as cursor:
         cursor.insertRow([route_id_value, float(start_measure), float(end_measure)])
-    
-    segment_layer=f"{base_name}_segment_layer"
+
+    segment_layer = f"{base_name}_segment_layer"
     arcpy.lr.MakeRouteEventLayer(
         in_routes=route_fc,
         route_id_field=route_id_field,
         in_table=segment_table,
         in_event_properties=f"{route_id_field} LINE FMEAS TMEAS",
-        out_layer=segment_layer
+        out_layer=segment_layer,
     )
 
-    segment_fc=os.path.join(out_gdb, f"{base_name}_segment_fc")
+    segment_fc = os.path.join(out_gdb, f"{base_name}_segment_fc")
     if arcpy.Exists(segment_fc):
         arcpy.management.Delete(segment_fc)
-    
+
     arcpy.management.CopyFeatures(segment_layer, segment_fc)
     return segment_fc
