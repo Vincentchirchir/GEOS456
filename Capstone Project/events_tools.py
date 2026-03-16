@@ -1,6 +1,5 @@
 import arcpy, os
 
-
 # The following function is checking other features against the main route and create point intersection and line overlap
 # Point intersection is where the route meets another feature.
 # Overlaps is where the route shares the same path with another line or passes through a polygon
