@@ -67,7 +67,7 @@ def create_layout_shell(
     # Mini map frame extent
     x_min_mini = width * 0.32545454545
     y_min_mini = 0
-    x_max_mini = width * 0.4809090909
+    x_max_mini = width * 0.55
     y_max_mini = height * 0.18470588235
 
     mini_extent = arcpy.Extent(x_min_mini, y_min_mini, x_max_mini, y_max_mini)
