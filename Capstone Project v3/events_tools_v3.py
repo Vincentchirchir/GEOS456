@@ -107,7 +107,7 @@ def locate_intersections_and_overlaps(
         )
 
         # out_table = rf"in_memory\{overlap_name}_event"
-        out_table = os.path.join(out_gdb, f"{point_name}_event")
+        out_table = os.path.join(out_gdb, f"{overlap_name}_event")
 
         arcpy.lr.LocateFeaturesAlongRoutes(
             in_features=overlap_fc,
