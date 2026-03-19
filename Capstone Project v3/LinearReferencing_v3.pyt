@@ -34,8 +34,8 @@ from map_tools_v3 import add_output_to_current_map
 from layout_tools_v3 import generate_alignment_layout
 from layout_tools_v3 import (
     generate_alignment_layout,
-    draw_stationing_leaders_for_points,
 )
+from leader_tools_v3 import draw_stationing_leaders_for_points, leaders_to_map_series
 
 importlib.reload(route_tools_v3)
 importlib.reload(stationing_tools_v3)
@@ -664,6 +664,8 @@ class GenerateStationing(object):
         )
         messages.addMessage("Chainage joined to station points.")
 
+        event_feature_outputs = None
+
         if analysis_layers:
             messages.addMessage("Creating intersections and overlaps...")
 
@@ -687,7 +689,7 @@ class GenerateStationing(object):
                 line_event_tables=event_outputs["line_event_tables"],
             )
 
-            make_event_layers_from_tables(
+            event_feature_outputs = make_event_layers_from_tables(
                 route_fc=outputs["route_fc"],
                 route_id_field=outputs["route_id_field"],
                 output_gdb=output_gdb,
@@ -698,6 +700,7 @@ class GenerateStationing(object):
         else:
             messages.addMessage("No intersecting or overlapping features provided.")
 
+        add_output_to_current_map(event_feature_outputs)
         add_output_to_current_map(outputs)
 
         if create_layout:
@@ -716,19 +719,36 @@ class GenerateStationing(object):
                 map_series_overlap=map_series_overlap,
             )
 
+        layout = layout_result["layout"]
+
+        if event_feature_outputs and event_feature_outputs.get("point_event_features"):
+            draw_stationing_leaders_for_points(
+                layout=layout,
+                map_frame=layout_result["main_map_frame"],
+                point_event_features=event_feature_outputs["point_event_features"],
+                clear_existing=True,
+            )
+
             if create_map_series and layout_result.get("map_series_info"):
                 map_series = layout_result["map_series_info"]["map_series"]
-                main_map_frame = layout_result["main_map_frame"]
 
-                point_event_features = outputs.get("point_event_features", [])
-
+                # clear once before loop if you want only one active page preview
                 for page_num in range(1, map_series.pageCount + 1):
                     map_series.currentPageNumber = page_num
-                    arcpy.AddMessage(f"Processing page {page_num}...")
+                    messages.addMessage(f"Processing page {page_num}...")
 
                     draw_stationing_leaders_for_points(
-                        map_frame=main_map_frame,
-                        point_event_features=point_event_features,
+                        layout=layout_result["layout"],
+                        map_frame=layout_result["main_map_frame"],
+                        point_event_features=event_feature_outputs[
+                            "point_event_features"
+                        ],
+                        page_id=page_num,
+                        clear_existing=False,
                     )
 
-            messages.addMessage(f"Layout created: {layout_result['layout_name']}")
+                    leaders_to_map_series(
+                        layout_name=layout_name,
+                        map_frame=layout_result["main_map_frame"],
+                        point_event_features=event_feature_outputs["point_event_features"],
+                    )

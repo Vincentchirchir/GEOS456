@@ -1,5 +1,6 @@
 import arcpy, os
 
+
 # The following function is checking other features against the main route and create point intersection and line overlap
 # Point intersection is where the route meets another feature.
 # Overlaps is where the route shares the same path with another line or passes through a polygon
@@ -107,7 +108,7 @@ def locate_intersections_and_overlaps(
         )
 
         # out_table = rf"in_memory\{overlap_name}_event"
-        out_table = os.path.join(out_gdb, f"{point_name}_event")
+        out_table = os.path.join(out_gdb, f"{overlap_name}_event")
 
         arcpy.lr.LocateFeaturesAlongRoutes(
             in_features=overlap_fc,

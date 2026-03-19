@@ -630,3 +630,713 @@ def execute(self, parameters, messages):
         )
 
     add_outputs_to_current_map(outputs)
+
+
+import arcpy
+
+
+def draw_stationing_leader_for_points(
+    layout,
+    map_frame,
+    point_event_features,
+    page_id=None,
+    clear_existing=False,
+):
+    """
+    Draw top-band chainage labels and elbow leaders for visible point events
+    in the current map frame extent.
+
+    Parameters
+    ----------
+    layout : arcpy.mp.Layout
+        The layout where labels and leaders will be created.
+    map_frame : arcpy.mp.MapFrame
+        The map frame used to get the visible extent and page coordinates.
+    point_event_features : list[str]
+        List of point feature classes containing a 'Chainage' field.
+    page_id : int or None
+        Current map series page number, used for unique element naming.
+    clear_existing : bool
+        If True, delete existing leader elements for the current page first.
+    """
+
+    if not layout:
+        arcpy.AddWarning("No active layout found.")
+        return
+
+    extent = map_frame.camera.getExtent()
+
+    # ---------------------------------------------------------
+    # 3. Optionally clear previous labels/leaders
+    #    If page_id is given, only delete that page's elements.
+    # ---------------------------------------------------------
+    if clear_existing:
+        for element in layout.listElements():
+            try:
+                if page_id is not None:
+                    if element.name.startswith(
+                        f"leader_line_{page_id}_"
+                    ) or element.name.startswith(f"leader_label_{page_id}_"):
+                        layout.deleteElement(element)
+                else:
+                    if element.name.startswith(
+                        "leader_line_"
+                    ) or element.name.startswith("leader_label_"):
+                        layout.deleteElement(element)
+            except Exception:
+                pass
+
+    # ---------------------------------------------------------
+    # 4. Collect visible points with Chainage
+    # ---------------------------------------------------------
+    visible_points = []
+
+    for point_fc in point_event_features:
+        if not point_fc or not arcpy.Exists(point_fc):
+            continue
+
+        fields = [f.name for f in arcpy.ListFields(point_fc)]
+        if "Chainage" not in fields:
+            continue
+
+        with arcpy.da.SearchCursor(point_fc, ["SHAPE@", "Chainage"]) as scursor:
+            for shape, chainage in scursor:
+                if not shape or chainage in [None, ""]:
+                    continue
+
+                pt = shape.centroid
+
+                if (
+                    extent.XMin <= pt.X <= extent.XMax
+                    and extent.YMin <= pt.Y <= extent.YMax
+                ):
+                    visible_points.append((pt.X, pt.Y, str(chainage)))
+
+    # ---------------------------------------------------------
+    # 5. If no points are visible, stop
+    # ---------------------------------------------------------
+    if not visible_points:
+        arcpy.AddMessage(
+            "No visible points found in current extent"
+            + (f" on page {page_id}." if page_id is not None else ".")
+        )
+        return
+
+    # ---------------------------------------------------------
+    # 6. Sort points from left to right
+    # ---------------------------------------------------------
+    visible_points.sort(key=lambda x: x[0])
+
+    # ---------------------------------------------------------
+    # 7. Define label band above map frame
+    # ---------------------------------------------------------
+    top_section_y = map_frame.elementPositionY + map_frame.elementHeight + 0.18
+    stagger_step = 0.10
+
+    # ---------------------------------------------------------
+    # 8. Open the current ArcGIS Pro project
+    # ---------------------------------------------------------
+    aprx = arcpy.mp.ArcGISProject("CURRENT")
+
+    created_leaders_count = 0
+
+    # ---------------------------------------------------------
+    # 9. Label placement settings
+    # ---------------------------------------------------------
+    placed_labels = []
+    min_spacing = 0.60
+    shift_pattern = [0, 0.3, -0.3, 0.6, -0.6, 0.9, -0.9, 1.2, -1.2]
+
+    left_limit = map_frame.elementPositionX
+    right_limit = map_frame.elementPositionX + map_frame.elementWidth
+
+    # ---------------------------------------------------------
+    # 10. Draw labels and elbow leaders
+    # ---------------------------------------------------------
+    for i, (map_x, map_y, label_text) in enumerate(visible_points):
+        try:
+            # Convert map coordinates to page coordinates
+            page_x = (
+                map_frame.elementPositionX
+                + ((map_x - extent.XMin) / (extent.XMax - extent.XMin))
+                * map_frame.elementWidth
+            )
+
+            page_y = (
+                map_frame.elementPositionY
+                + ((map_y - extent.YMin) / (extent.YMax - extent.YMin))
+                * map_frame.elementHeight
+            )
+        except Exception as e:
+            arcpy.AddWarning(
+                f"Could not convert map coordinates to page coordinates: {e}"
+            )
+            continue
+
+        # Put labels into 3 staggered rows
+        label_y = top_section_y + (i % 3) * stagger_step
+
+        # Small base spread before collision checks
+        base_offset = (i % 5 - 2) * 0.15
+        initial_x = page_x + base_offset
+
+        label_x = initial_x
+
+        # Try a few positions to avoid overlap
+        for shift in shift_pattern:
+            trial_x = initial_x + shift
+            trial_x = max(left_limit, min(trial_x, right_limit))
+
+            collision = False
+
+            for prev_x, prev_y in placed_labels:
+                too_close_x = abs(prev_x - trial_x) < min_spacing
+                too_close_y = abs(prev_y - label_y) < 0.15
+
+                if too_close_x and too_close_y:
+                    collision = True
+                    break
+
+            if not collision:
+                label_x = trial_x
+                break
+
+        # -----------------------------------------------------
+        # Create label text
+        # -----------------------------------------------------
+        try:
+            text = aprx.createTextElement(
+                layout,
+                arcpy.Point(label_x, label_y),
+                "POINT",
+                label_text,
+                6,
+            )
+
+            text.name = (
+                f"leader_label_{page_id}_{i}"
+                if page_id is not None
+                else f"leader_label_{i}"
+            )
+
+            text_cim = text.getDefinition("V3")
+            text_cim.graphic.symbol.symbol.fontFamilyName = "Tahoma"
+            text_cim.graphic.symbol.symbol.height = 6
+            text.setDefinition(text_cim)
+
+        except Exception as e:
+            arcpy.AddWarning(f"Could not create text element for {label_text}: {e}")
+            continue
+
+        # -----------------------------------------------------
+        # Create elbow leader
+        # -----------------------------------------------------
+        try:
+            elbow_y = label_y - 0.08
+
+            leader_geom = arcpy.Polyline(
+                arcpy.Array(
+                    [
+                        arcpy.Point(page_x, page_y),  # start at point
+                        arcpy.Point(page_x, elbow_y),  # vertical up
+                        arcpy.Point(label_x, elbow_y),  # horizontal to label zone
+                    ]
+                )
+            )
+
+            leader = aprx.createGraphicElement(
+                layout,
+                leader_geom,
+                name=(
+                    f"leader_line_{page_id}_{i}"
+                    if page_id is not None
+                    else f"leader_line_{i}"
+                ),
+            )
+
+            leader_cim = leader.getDefinition("V3")
+            leader_cim.graphic.symbol.symbol.symbolLayers[0].width = 0.5
+            leader.setDefinition(leader_cim)
+
+            placed_labels.append((label_x, label_y))
+            created_leaders_count += 1
+
+        except Exception as e:
+            arcpy.AddWarning(f"Could not create leader for {label_text}: {e}")
+
+    arcpy.AddMessage(
+        f"Leader labels drawn for {created_leaders_count} visible points"
+        + (f" on page {page_id}." if page_id is not None else ".")
+    )
+
+
+def apply_leaders_to_layout_map_series(
+    layout_name,
+    map_frame_name,
+    point_event_features,
+):
+    """
+    Apply elbow leaders to a layout.
+    If map series is enabled, process each page.
+    If map series is not enabled, process the current layout once.
+
+    Parameters
+    ----------
+    layout_name : str
+        Name of the layout in the current ArcGIS Pro project.
+    map_frame_name : str
+        Name of the map frame in the layout.
+    point_event_features : list[str]
+        List of point feature classes containing a 'Chainage' field.
+    """
+
+    aprx = arcpy.mp.ArcGISProject("CURRENT")
+
+    # ---------------------------------------------------------
+    # 1. Get layout
+    # ---------------------------------------------------------
+    layouts = aprx.listLayouts(layout_name)
+    if not layouts:
+        raise ValueError(f"Layout '{layout_name}' not found.")
+
+    layout = layouts[0]
+
+    # ---------------------------------------------------------
+    # 2. Get map frame
+    # ---------------------------------------------------------
+    map_frames = layout.listElements("MAPFRAME_ELEMENT", map_frame_name)
+    if not map_frames:
+        raise ValueError(
+            f"Map frame '{map_frame_name}' not found in layout '{layout_name}'."
+        )
+
+    map_frame = map_frames[0]
+
+    # ---------------------------------------------------------
+    # 3. Check whether map series is enabled
+    # ---------------------------------------------------------
+    map_series = layout.mapSeries
+
+    if map_series and map_series.enabled:
+        arcpy.AddMessage(
+            f"Map series detected. Applying leaders to {map_series.pageCount} pages."
+        )
+
+        for page_num in range(1, map_series.pageCount + 1):
+            map_series.currentPageNumber = page_num
+
+            draw_stationing_leader_for_points(
+                layout=layout,
+                map_frame=map_frame,
+                point_event_features=point_event_features,
+                page_id=page_num,
+                clear_existing=True,
+            )
+
+            arcpy.AddMessage(f"Finished page {page_num}.")
+
+    else:
+        arcpy.AddMessage("No enabled map series found. Applying leaders once.")
+
+        draw_stationing_leader_for_points(
+            layout=layout,
+            map_frame=map_frame,
+            point_event_features=point_event_features,
+            page_id=None,
+            clear_existing=True,
+        )
+
+
+# -----------------------------------------------------------------
+# EXAMPLE USAGE
+# Replace these values with your actual names/paths
+# -----------------------------------------------------------------
+if __name__ == "__main__":
+    layout_name = "Alignment Layout"
+    map_frame_name = "Main Map Frame"
+
+    point_event_features = [
+        r"C:\Capstone\Alignmentsheet\Alignmentsheet.gdb\Point_Intersections",
+        r"C:\Capstone\Alignmentsheet\Alignmentsheet.gdb\Station_Points",
+    ]
+
+    apply_leaders_to_layout_map_series(
+        layout_name=layout_name,
+        map_frame_name=map_frame_name,
+        point_event_features=point_event_features,
+    )
+
+
+import arcpy
+import os
+
+
+def draw_stationing_leader_for_points(
+    layout,
+    map_frame,
+    point_event_features,
+    page_id=None,
+    clear_existing=False,
+):
+    """
+    Draw top-band chainage labels and elbow leaders for visible point events
+    in the current map frame extent.
+
+    Parameters
+    ----------
+    layout : arcpy.mp.Layout
+        The layout where labels and leaders will be created.
+    map_frame : arcpy.mp.MapFrame
+        The map frame used to get the visible extent and page coordinates.
+    point_event_features : list[str]
+        List of point feature classes containing a 'Chainage' field.
+    page_id : int or None
+        Current map series page number, used for unique element naming.
+    clear_existing : bool
+        If True, delete existing leader elements for the current page first.
+    """
+
+    # ---------------------------------------------------------
+    # 1. Safety check
+    # ---------------------------------------------------------
+    if not layout:
+        arcpy.AddWarning("No active layout found.")
+        return
+
+    # ---------------------------------------------------------
+    # 2. Get the current visible extent from the map frame
+    # ---------------------------------------------------------
+    extent = map_frame.camera.getExtent()
+
+    # ---------------------------------------------------------
+    # 3. Optionally clear previous labels/leaders
+    #    If page_id is given, only delete that page's elements.
+    # ---------------------------------------------------------
+    if clear_existing:
+        for element in layout.listElements():
+            try:
+                if page_id is not None:
+                    if element.name.startswith(
+                        f"leader_line_{page_id}_"
+                    ) or element.name.startswith(f"leader_label_{page_id}_"):
+                        layout.deleteElement(element)
+                else:
+                    if element.name.startswith(
+                        "leader_line_"
+                    ) or element.name.startswith("leader_label_"):
+                        layout.deleteElement(element)
+            except Exception:
+                pass
+
+    # ---------------------------------------------------------
+    # 4. Collect visible points with Chainage
+    # ---------------------------------------------------------
+    visible_points = []
+
+    for point_fc in point_event_features:
+        if not point_fc or not arcpy.Exists(point_fc):
+            continue
+
+        fields = [f.name for f in arcpy.ListFields(point_fc)]
+        if "Chainage" not in fields:
+            continue
+
+        with arcpy.da.SearchCursor(point_fc, ["SHAPE@", "Chainage"]) as scursor:
+            for shape, chainage in scursor:
+                if not shape or chainage in [None, ""]:
+                    continue
+
+                pt = shape.centroid
+
+                if (
+                    extent.XMin <= pt.X <= extent.XMax
+                    and extent.YMin <= pt.Y <= extent.YMax
+                ):
+                    visible_points.append((pt.X, pt.Y, str(chainage)))
+
+    if not visible_points:
+        arcpy.AddMessage(
+            f"No visible points found in current extent"
+            + (f" on page {page_id}." if page_id is not None else ".")
+        )
+        return
+
+    # ---------------------------------------------------------
+    # 5. Sort left to right for predictable labeling
+    # ---------------------------------------------------------
+    visible_points.sort(key=lambda x: x[0])
+
+    # ---------------------------------------------------------
+    # 6. Top label band settings
+    # ---------------------------------------------------------
+    top_section_y = map_frame.elementPositionY + map_frame.elementHeight + 0.18
+    stagger_step = 0.10
+
+    # ---------------------------------------------------------
+    # 7. Get current ArcGIS Pro project
+    # ---------------------------------------------------------
+    aprx = arcpy.mp.ArcGISProject("CURRENT")
+
+    created_leaders_count = 0
+
+    # ---------------------------------------------------------
+    # 8. Label placement settings
+    # ---------------------------------------------------------
+    placed_labels = []
+    min_spacing = 0.60
+    shift_pattern = [0, 0.3, -0.3, 0.6, -0.6, 0.9, -0.9, 1.2, -1.2]
+
+    left_limit = map_frame.elementPositionX
+    right_limit = map_frame.elementPositionX + map_frame.elementWidth
+
+    # ---------------------------------------------------------
+    # 9. Draw labels and elbow leaders
+    # ---------------------------------------------------------
+    for i, (map_x, map_y, label_text) in enumerate(visible_points):
+        try:
+            # Convert map coordinates to page coordinates
+            page_x = (
+                map_frame.elementPositionX
+                + ((map_x - extent.XMin) / (extent.XMax - extent.XMin))
+                * map_frame.elementWidth
+            )
+
+            page_y = (
+                map_frame.elementPositionY
+                + ((map_y - extent.YMin) / (extent.YMax - extent.YMin))
+                * map_frame.elementHeight
+            )
+        except Exception as e:
+            arcpy.AddWarning(
+                f"Could not convert map coordinates to page coordinates: {e}"
+            )
+            continue
+
+        # Put labels in 3 staggered rows
+        label_y = top_section_y + (i % 3) * stagger_step
+
+        # Give labels a small natural spread before collision checks
+        base_offset = (i % 5 - 2) * 0.15
+        initial_x = page_x + base_offset
+
+        # Find a collision-free x-position
+        label_x = initial_x
+
+        for shift in shift_pattern:
+            trial_x = initial_x + shift
+            trial_x = max(left_limit, min(trial_x, right_limit))
+
+            collision = False
+
+            for prev_x, prev_y in placed_labels:
+                too_close_x = abs(prev_x - trial_x) < min_spacing
+                too_close_y = abs(prev_y - label_y) < 0.15
+
+                if too_close_x and too_close_y:
+                    collision = True
+                    break
+
+            if not collision:
+                label_x = trial_x
+                break
+
+        # -----------------------------------------------------
+        # Create text label
+        # -----------------------------------------------------
+        try:
+            text = aprx.createTextElement(
+                layout,
+                arcpy.Point(label_x, label_y),
+                "POINT",
+                label_text,
+                6,
+            )
+
+            text.name = (
+                f"leader_label_{page_id}_{i}"
+                if page_id is not None
+                else f"leader_label_{i}"
+            )
+
+            text_cim = text.getDefinition("V3")
+            text_cim.graphic.symbol.symbol.fontFamilyName = "Tahoma"
+            text_cim.graphic.symbol.symbol.height = 6
+            text.setDefinition(text_cim)
+
+        except Exception as e:
+            arcpy.AddWarning(f"Could not create text element for {label_text}: {e}")
+            continue
+
+        # -----------------------------------------------------
+        # Create elbow leader
+        # 3 points:
+        # 1. actual point
+        # 2. straight up to elbow level
+        # 3. across to under the label
+        # -----------------------------------------------------
+        try:
+            elbow_y = label_y - 0.08
+
+            leader_geom = arcpy.Polyline(
+                arcpy.Array(
+                    [
+                        arcpy.Point(page_x, page_y),
+                        arcpy.Point(page_x, elbow_y),
+                        arcpy.Point(label_x, elbow_y),
+                    ]
+                )
+            )
+
+            leader = aprx.createGraphicElement(
+                layout,
+                leader_geom,
+                name=(
+                    f"leader_line_{page_id}_{i}"
+                    if page_id is not None
+                    else f"leader_line_{i}"
+                ),
+            )
+
+            leader_cim = leader.getDefinition("V3")
+            leader_cim.graphic.symbol.symbol.symbolLayers[0].width = 0.5
+            leader.setDefinition(leader_cim)
+
+            placed_labels.append((label_x, label_y))
+            created_leaders_count += 1
+
+        except Exception as e:
+            arcpy.AddWarning(f"Could not create leader for {label_text}: {e}")
+
+    arcpy.AddMessage(
+        f"Leader labels drawn for {created_leaders_count} visible points"
+        + (f" on page {page_id}." if page_id is not None else ".")
+    )
+
+
+def export_layout_with_map_series_and_leaders(
+    layout_name,
+    map_frame_name,
+    point_event_features,
+    output_folder,
+    pdf_prefix="AlignmentSheet",
+):
+    """
+    Export a layout page-by-page to PDF using map series, while drawing
+    elbow leaders for visible point events on each page.
+
+    Parameters
+    ----------
+    layout_name : str
+        Name of the layout in the current ArcGIS Pro project.
+    map_frame_name : str
+        Name of the map frame inside the layout.
+    point_event_features : list[str]
+        Point feature classes containing a 'Chainage' field.
+    output_folder : str
+        Folder where PDFs will be exported.
+    pdf_prefix : str
+        Prefix for exported PDF filenames.
+    """
+
+    aprx = arcpy.mp.ArcGISProject("CURRENT")
+
+    # ---------------------------------------------------------
+    # 1. Find the layout by name
+    # ---------------------------------------------------------
+    layouts = aprx.listLayouts(layout_name)
+    if not layouts:
+        raise ValueError(f"Layout '{layout_name}' not found.")
+
+    layout = layouts[0]
+
+    # ---------------------------------------------------------
+    # 2. Find the map frame by name
+    # ---------------------------------------------------------
+    map_frames = layout.listElements("MAPFRAME_ELEMENT", map_frame_name)
+    if not map_frames:
+        raise ValueError(
+            f"Map frame '{map_frame_name}' not found in layout '{layout_name}'."
+        )
+
+    map_frame = map_frames[0]
+
+    # ---------------------------------------------------------
+    # 3. Make sure output folder exists
+    # ---------------------------------------------------------
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+
+    # ---------------------------------------------------------
+    # 4. Check map series
+    # ---------------------------------------------------------
+    map_series = layout.mapSeries
+
+    if map_series and map_series.enabled:
+        arcpy.AddMessage(
+            f"Map series detected. Exporting {map_series.pageCount} pages."
+        )
+
+        for page_num in range(1, map_series.pageCount + 1):
+            # Set the active page
+            map_series.currentPageNumber = page_num
+
+            # Redraw labels and elbow leaders for this page only
+            draw_stationing_leader_for_points(
+                layout=layout,
+                map_frame=map_frame,
+                point_event_features=point_event_features,
+                page_id=page_num,
+                clear_existing=True,
+            )
+
+            # Build output PDF name
+            pdf_name = f"{pdf_prefix}_Page_{page_num}.pdf"
+            pdf_path = os.path.join(output_folder, pdf_name)
+
+            # Export current page to PDF
+            layout.exportToPDF(pdf_path)
+
+            arcpy.AddMessage(f"Exported page {page_num} to: {pdf_path}")
+
+    else:
+        arcpy.AddMessage("No enabled map series found. Exporting single layout.")
+
+        # Draw leaders once
+        draw_stationing_leader_for_points(
+            layout=layout,
+            map_frame=map_frame,
+            point_event_features=point_event_features,
+            page_id=None,
+            clear_existing=True,
+        )
+
+        # Export single PDF
+        pdf_name = f"{pdf_prefix}.pdf"
+        pdf_path = os.path.join(output_folder, pdf_name)
+        layout.exportToPDF(pdf_path)
+
+        arcpy.AddMessage(f"Exported layout to: {pdf_path}")
+
+
+# -----------------------------------------------------------------
+# EXAMPLE USAGE
+# Replace these names/paths with your actual project values
+# -----------------------------------------------------------------
+if __name__ == "__main__":
+    layout_name = "Alignment Layout"
+    map_frame_name = "Main Map Frame"
+
+    point_event_features = [
+        r"C:\Capstone\Alignmentsheet\Alignmentsheet.gdb\Point_Intersections",
+        r"C:\Capstone\Alignmentsheet\Alignmentsheet.gdb\Station_Points",
+    ]
+
+    output_folder = r"C:\Capstone\Alignmentsheet\Exports"
+
+    export_layout_with_map_series_and_leaders(
+        layout_name=layout_name,
+        map_frame_name=map_frame_name,
+        point_event_features=point_event_features,
+        output_folder=output_folder,
+        pdf_prefix="AlignmentSheet",
+    )
