@@ -483,70 +483,6 @@ def draw_stationing_leaders_for_points(
     )
 
 
-def leaders_to_map_series(
-    layout_name,
-    map_frame,
-    point_event_features,
-):
-    aprx = arcpy.mp.ArcGISProject("CURRENT")
-
-    # get the layout first
-    layouts = aprx.listLayouts(layout_name)
-    if not layouts:
-        raise ValueError(f"Layout '{layout_name}' not found")
-
-    layout = layouts[0]
-
-    # below we are allowing the function to accept either:
-    # 1. a real map frame object passed from another function
-    # 2. or a map frame name string
-    if hasattr(map_frame, "camera") and hasattr(map_frame, "elementWidth"):
-        target_map_frame = map_frame
-    elif isinstance(map_frame, str):
-        map_frames = layout.listElements("MAPFRAME_ELEMENT", map_frame)
-        if not map_frames:
-            raise ValueError(
-                f"Map frame '{map_frame}' not found in layout '{layout_name}'"
-            )
-        target_map_frame = map_frames[0]
-    else:
-        raise ValueError(
-            f"map_frame must be either a MapFrame object or a map frame name string, got: {type(map_frame)}"
-        )
-
-    # check if map series exists and is enabled
-    map_series = layout.mapSeries
-
-    if map_series and map_series.enabled:
-        current_page = map_series.currentPageNumber
-
-        arcpy.AddMessage(
-            f"Map series detected. Drawing leaders only for current page {current_page}"
-        )
-
-        # clear existing leaders first, then draw only for the current page
-        draw_stationing_leaders_for_points(
-            layout=layout,
-            map_frame=target_map_frame,
-            point_event_features=point_event_features,
-            page_id=current_page,
-            clear_existing=True,
-        )
-
-        arcpy.AddMessage(f"Finished drawing leaders for current page {current_page}")
-
-    else:
-        arcpy.AddMessage("No enabled map series found. Drawing leaders once")
-
-        draw_stationing_leaders_for_points(
-            layout=layout,
-            map_frame=target_map_frame,
-            point_event_features=point_event_features,
-            page_id=None,
-            clear_existing=True,
-        )
-
-
 # def leaders_to_map_series(
 #     layout_name,
 #     map_frame,
@@ -554,14 +490,16 @@ def leaders_to_map_series(
 # ):
 #     aprx = arcpy.mp.ArcGISProject("CURRENT")
 
-#     # get layout
+#     # get the layout first
 #     layouts = aprx.listLayouts(layout_name)
 #     if not layouts:
 #         raise ValueError(f"Layout '{layout_name}' not found")
 
 #     layout = layouts[0]
 
-#     #  FIX: accept either MapFrame object OR name
+#     # below we are allowing the function to accept either:
+#     # 1. a real map frame object passed from another function
+#     # 2. or a map frame name string
 #     if hasattr(map_frame, "camera") and hasattr(map_frame, "elementWidth"):
 #         target_map_frame = map_frame
 #     elif isinstance(map_frame, str):
@@ -573,44 +511,106 @@ def leaders_to_map_series(
 #         target_map_frame = map_frames[0]
 #     else:
 #         raise ValueError(
-#             f"map_frame must be a MapFrame object or a name, got: {type(map_frame)}"
+#             f"map_frame must be either a MapFrame object or a map frame name string, got: {type(map_frame)}"
 #         )
 
+#     # check if map series exists and is enabled
 #     map_series = layout.mapSeries
 
 #     if map_series and map_series.enabled:
+#         current_page = map_series.currentPageNumber
+
 #         arcpy.AddMessage(
-#             f"Map series detected. Applying leaders to {map_series.pageCount} pages"
+#             f"Map series detected. Drawing leaders only for current page {current_page}"
 #         )
 
-#         #  FIX: clear once before looping
+#         # clear existing leaders first, then draw only for the current page
 #         draw_stationing_leaders_for_points(
 #             layout=layout,
 #             map_frame=target_map_frame,
-#             point_event_features=[],
+#             point_event_features=point_event_features,
+#             page_id=current_page,
 #             clear_existing=True,
 #         )
 
-#         for page_number in range(1, map_series.pageCount + 1):
-#             map_series.currentPageNumber = page_number
-
-#             draw_stationing_leaders_for_points(
-#                 layout=layout,
-#                 map_frame=target_map_frame,  # 🔥 FIX: correct param name
-#                 point_event_features=point_event_features,
-#                 page_id=page_number,
-#                 clear_existing=False,
-#             )
-
-#             arcpy.AddMessage(f"Finished page {page_number}")
+#         arcpy.AddMessage(f"Finished drawing leaders for current page {current_page}")
 
 #     else:
-#         arcpy.AddMessage("No enabled map series found. Applying leaders once")
+#         arcpy.AddMessage("No enabled map series found. Drawing leaders once")
 
 #         draw_stationing_leaders_for_points(
 #             layout=layout,
-#             map_frame=target_map_frame,  # 🔥 FIX: correct param name
+#             map_frame=target_map_frame,
 #             point_event_features=point_event_features,
 #             page_id=None,
 #             clear_existing=True,
 #         )
+
+
+def leaders_to_map_series(
+    layout_name,
+    map_frame,
+    point_event_features,
+):
+    aprx = arcpy.mp.ArcGISProject("CURRENT")
+
+    # get layout
+    layouts = aprx.listLayouts(layout_name)
+    if not layouts:
+        raise ValueError(f"Layout '{layout_name}' not found")
+
+    layout = layouts[0]
+
+    #  accept either MapFrame object OR name
+    if hasattr(map_frame, "camera") and hasattr(map_frame, "elementWidth"):
+        target_map_frame = map_frame
+    elif isinstance(map_frame, str):
+        map_frames = layout.listElements("MAPFRAME_ELEMENT", map_frame)
+        if not map_frames:
+            raise ValueError(
+                f"Map frame '{map_frame}' not found in layout '{layout_name}'"
+            )
+        target_map_frame = map_frames[0]
+    else:
+        raise ValueError(
+            f"map_frame must be a MapFrame object or a name, got: {type(map_frame)}"
+        )
+
+    map_series = layout.mapSeries
+
+    if map_series and map_series.enabled:
+        arcpy.AddMessage(
+            f"Map series detected. Applying leaders to {map_series.pageCount} pages"
+        )
+
+        #  clear once before looping
+        draw_stationing_leaders_for_points(
+            layout=layout,
+            map_frame=target_map_frame,
+            point_event_features=[],
+            clear_existing=True,
+        )
+
+        for page_number in range(1, map_series.pageCount + 1):
+            map_series.currentPageNumber = page_number
+
+            draw_stationing_leaders_for_points(
+                layout=layout,
+                map_frame=target_map_frame,
+                point_event_features=point_event_features,
+                page_id=page_number,
+                clear_existing=False,
+            )
+
+            arcpy.AddMessage(f"Finished page {page_number}")
+
+    else:
+        arcpy.AddMessage("No enabled map series found. Applying leaders once")
+
+        draw_stationing_leaders_for_points(
+            layout=layout,
+            map_frame=target_map_frame,
+            point_event_features=point_event_features,
+            page_id=None,
+            clear_existing=True,
+        )
