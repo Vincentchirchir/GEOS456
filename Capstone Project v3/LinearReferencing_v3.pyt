@@ -46,7 +46,7 @@ importlib.reload(layout_elements_v3)
 
 
 def _iter_refresh_candidate_maps(aprx, primary_map):
-    # Refresh Leaders should prefer the map used by the layout's map frame, but
+    # Refresh Leaders should prefer the map used by the layouts map frame, but
     # fall back to the active map and other project maps because the outputs are
     # currently added to aprx.activeMap during generation.
     seen = set()
@@ -100,7 +100,7 @@ def _is_refresh_point_event_layer(lyr):
         if "Chainage" not in field_names:
             return False
 
-        # Must be intersection/event-derived
+        # Must be intersection/event
         if "intersect" in name_blob or "event" in name_blob:
             return True
 

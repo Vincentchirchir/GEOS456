@@ -266,7 +266,8 @@ def draw_stationing_leaders_for_points(
 
     # define the top section position.How far will the line go up? Height
     # Defined using Y coordinates. Like graph. X horizontal, Y vertical
-    leader_band_y = map_frame.elementPositionY + map_frame.elementHeight + 0.12
+    # leader_band_y = map_frame.elementPositionY + map_frame.elementHeight + 0.12
+    leader_band_y = map_frame.elementPositionY
     label_base_y = (
         leader_band_y + 0.08
     )  # this  pushes the labels a bit above the to of the map frame
