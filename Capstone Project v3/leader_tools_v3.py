@@ -366,7 +366,7 @@ def draw_stationing_leaders_for_points(
                     [
                         arcpy.Point(page_x, leader_start_y),  #  start at point
                         arcpy.Point(page_x, leader_band_y),
-                        arcpy.Point(label_x, leader_band_y),
+                        arcpy.Point(label_x, leader_band_y),  # elbow
                         # arcpy.Point(label_x, leader_band_y), # small top tick
                     ]
                 )
