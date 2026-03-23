@@ -1,11 +1,21 @@
+# ---------------------------------------------------------------------------------------
+# Name:        Assignment 3
+# Purpose:      The purpose of this assignment is to apply grid statistics to analyze raster datasets using high-level/
+# programming (HLP) language through geographic information system (GIS) extensions.
+#
+# Author:      Chirchir Vincent
+#
+# Created:     20/03/2026
+# Copyright:   (c) vincent 2026
+# Licence:     <your licence>
+# ---------------------------------------------------------------------------------------
+
 import arcpy
 from arcpy.sa import *
 
 # setting environment
 arcpy.env.overwriteOutput = True
-arcpy.env.workspace = (
-    r"C:\GIS SCRIPTS\GEOS456\Assignments\Assign03\Spatial_Decisions.gdb"
-)
+arcpy.env.workspace = r"C:\GEOS456\Assign03\Spatial_Decisions.gdb"
 workspace = arcpy.env.workspace
 
 
@@ -106,7 +116,7 @@ print()
 
 # 8. Mean slope for selected watersheds
 watersheds = "wshds2c"
-watershed_layer = arcpy.MakeFeatureLayer_management(watersheds, "watersheds_lyr")
+watershed_layer = arcpy.MakeFeatureLayer_management(watersheds, "watersheds_layer")
 field_delim = arcpy.AddFieldDelimiters(watersheds, "WSHDS2C_ID")
 values = f"{field_delim} IN (291, 313, 525)"
 arcpy.SelectLayerByAttribute_management(watershed_layer, "NEW_SELECTION", values)
@@ -114,7 +124,7 @@ print("Selected watersheds 291, 313, and 525")
 messages()
 
 ZonalStatisticsAsTable(
-    "watersheds_lyr", "WSHDS2C_ID", "Slope_DEM", "AVERAGE_MEAN_SLOPE", "DATA", "MEAN"
+    "watersheds_layer", "WSHDS2C_ID", "Slope_DEM", "AVERAGE_MEAN_SLOPE", "DATA", "MEAN"
 )
 print("Created watershed slope table: AVERAGE_MEAN_SLOPE")
 messages()

@@ -1,6 +1,62 @@
 import arcpy, os
 
 
+LEADER_ANCHOR_ID_FIELD = "LeaderAnchorID"
+POINT_EVENT_JOIN_FIELDS = ("Chainage", "MEAS", "DISTANCE")
+
+
+def _ensure_leader_anchor_ids(point_fc):
+    # Store a stable ID on the raw Intersect output so we can later join the
+    # chainage results back onto the exact same point geometry.
+    existing_fields = [f.name for f in arcpy.ListFields(point_fc)]
+
+    if LEADER_ANCHOR_ID_FIELD not in existing_fields:
+        arcpy.management.AddField(point_fc, LEADER_ANCHOR_ID_FIELD, "LONG")
+
+    with arcpy.da.UpdateCursor(point_fc, ["OID@", LEADER_ANCHOR_ID_FIELD]) as cursor:
+        for row in cursor:
+            row[1] = row[0]
+            cursor.updateRow(row)
+
+
+def _build_point_intersection_lookup(point_intersections, output_gdb):
+    lookup = {}
+
+    for point_fc in point_intersections or []:
+        point_name = arcpy.ValidateTableName(
+            os.path.splitext(os.path.basename(point_fc))[0], output_gdb
+        )
+        lookup[point_name.lower()] = point_fc
+
+    return lookup
+
+
+def _copy_raw_intersections_with_chainage(point_fc, event_table, out_fc):
+    # Copy the original point geometry first, then join the route-measure fields.
+    # This keeps the leader anchor on the real crossing while still exposing
+    # Chainage/MEAS values for labels and QA.
+    if arcpy.Exists(out_fc):
+        arcpy.management.Delete(out_fc)
+
+    arcpy.management.CopyFeatures(point_fc, out_fc)
+
+    available_fields = {field.name for field in arcpy.ListFields(event_table)}
+    join_fields = [
+        field_name
+        for field_name in POINT_EVENT_JOIN_FIELDS
+        if field_name in available_fields
+    ]
+
+    if join_fields:
+        arcpy.management.JoinField(
+            in_data=out_fc,
+            in_field=LEADER_ANCHOR_ID_FIELD,
+            join_table=event_table,
+            join_field=LEADER_ANCHOR_ID_FIELD,
+            fields=join_fields,
+        )
+
+
 # The following function is checking other features against the main route and create point intersection and line overlap
 # Point intersection is where the route meets another feature.
 # Overlaps is where the route shares the same path with another line or passes through a polygon
@@ -38,6 +94,7 @@ def create_intersections_and_overlaps(
             # if count>0, keep output, if =0, delete the empty feature class
             # So that the gdb is not filled by empty feature
             if int(arcpy.management.GetCount(point_out)[0]) > 0:
+                _ensure_leader_anchor_ids(point_out)
                 point_intersections.append(point_out)
             else:
                 arcpy.management.Delete(point_out)
@@ -94,7 +151,9 @@ def locate_intersections_and_overlaps(
             out_table=out_table,
             out_event_properties=f"{route_id_field} POINT MEAS",
             radius_or_tolerance=tolerance,
+            route_locations="FIRST",
             distance_field="DISTANCE",
+            in_fields="FIELDS",
         )
 
         if int(arcpy.management.GetCount(out_table)[0]) > 0:
@@ -118,6 +177,7 @@ def locate_intersections_and_overlaps(
             out_event_properties=f"{route_id_field} LINE FMEAS TMEAS",
             radius_or_tolerance=tolerance,
             distance_field="DISTANCE",
+            in_fields="FIELDS",
         )
 
         if int(arcpy.management.GetCount(out_table)[0]) > 0:
@@ -204,9 +264,13 @@ def make_event_layers_from_tables(
     output_gdb,
     point_event_tables,
     line_event_tables,
+    point_intersections=None,
 ):
     point_event_features = []
     line_event_features = []
+    point_intersection_lookup = _build_point_intersection_lookup(
+        point_intersections, output_gdb
+    )
 
     for table in point_event_tables:
         base_name = arcpy.ValidateTableName(
@@ -215,16 +279,38 @@ def make_event_layers_from_tables(
 
         out_layer = f"{base_name}_layer"
         out_fc = os.path.join(output_gdb, f"{base_name}_intersect")
-
-        arcpy.lr.MakeRouteEventLayer(
-            in_routes=route_fc,
-            route_id_field=route_id_field,
-            in_table=table,
-            in_event_properties=f"{route_id_field} POINT MEAS",
-            out_layer=out_layer,
+        point_name = (
+            base_name[:-6] if base_name.lower().endswith("_event") else base_name
         )
+        source_point_fc = point_intersection_lookup.get(point_name.lower())
 
-        arcpy.management.CopyFeatures(out_layer, out_fc)
+        if source_point_fc and arcpy.Exists(source_point_fc):
+            _copy_raw_intersections_with_chainage(source_point_fc, table, out_fc)
+        else:
+            arcpy.lr.MakeRouteEventLayer(
+                in_routes=route_fc,
+                route_id_field=route_id_field,
+                in_table=table,
+                in_event_properties=f"{route_id_field} POINT MEAS",
+                out_layer=out_layer,
+            )
+
+            if arcpy.Exists(out_fc):
+                arcpy.management.Delete(out_fc)
+
+            arcpy.management.CopyFeatures(out_layer, out_fc)
+
+        if arcpy.Exists(out_fc):
+            desc = arcpy.Describe(out_fc)
+            if desc.shapeType == "Multipoint":
+                single_fc = os.path.join(output_gdb, f"{base_name}_single")
+
+                if arcpy.Exists(single_fc):
+                    arcpy.management.Delete(single_fc)
+
+                arcpy.management.MultipartToSinglepart(out_fc, single_fc)
+                out_fc = single_fc
+
         point_event_features.append(out_fc)
 
     for table in line_event_tables:

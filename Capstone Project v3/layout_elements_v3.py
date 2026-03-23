@@ -255,6 +255,7 @@ def add_standard_texts(project, layout, width, height):
         except:
             pass
 
+
 def add_boundary_graphics(project, layout, width, height):
     grouping_polygons = []
 

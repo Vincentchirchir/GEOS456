@@ -45,11 +45,216 @@ importlib.reload(layout_tools_v3)
 importlib.reload(layout_elements_v3)
 
 
+def _iter_refresh_candidate_maps(aprx, primary_map):
+    # Refresh Leaders should prefer the map used by the layout's map frame, but
+    # fall back to the active map and other project maps because the outputs are
+    # currently added to aprx.activeMap during generation.
+    seen = set()
+
+    for map_obj in [primary_map, aprx.activeMap, *aprx.listMaps()]:
+        if not map_obj:
+            continue
+
+        map_id = getattr(map_obj, "URI", None) or getattr(map_obj, "name", None)
+        if map_id in seen:
+            continue
+
+        seen.add(map_id)
+        yield map_obj
+
+
+def _is_refresh_point_event_layer(lyr):
+    try:
+        if not lyr.isFeatureLayer or getattr(lyr, "isBroken", False):
+            return False
+
+        desc = arcpy.Describe(lyr)
+        if desc.shapeType not in ["Point", "Multipoint"]:
+            return False
+
+        data_source = getattr(lyr, "dataSource", None)
+        field_target = data_source if data_source else lyr
+        field_names = {field.name for field in arcpy.ListFields(field_target)}
+
+        data_source_name = (
+            os.path.splitext(os.path.basename(data_source))[0].lower()
+            if data_source
+            else ""
+        )
+        layer_name = getattr(lyr, "name", "").lower()
+        desc_name = getattr(desc, "basename", "").lower()
+        name_blob = " ".join(
+            part for part in [data_source_name, layer_name, desc_name] if part
+        )
+
+        # Accept any point layer that has Chainage
+        # Reject known non-event layers
+        if "station" in name_blob:
+            return False
+
+        # Must be point type
+        if desc.shapeType not in ["Point", "Multipoint"]:
+            return False
+
+        # Must have Chainage (still useful)
+        if "Chainage" not in field_names:
+            return False
+
+        # Must be intersection/event-derived
+        if "intersect" in name_blob or "event" in name_blob:
+            return True
+
+        return False
+
+    except Exception:
+        return False
+
+
+def _iter_layers(layers):
+    for lyr in layers:
+        yield lyr
+        if lyr.isGroupLayer:
+            for sublyr in _iter_layers(lyr.listLayers()):
+                yield sublyr
+
+
+def _discover_refresh_point_event_features(aprx, primary_map):
+    discovered = []
+    seen_sources = set()
+    searched_maps = []
+
+    for map_obj in _iter_refresh_candidate_maps(aprx, primary_map):
+        searched_maps.append(map_obj.name)
+
+        try:
+            layers = map_obj.listLayers()
+        except Exception:
+            continue
+
+        for lyr in _iter_layers(layers):
+            try:
+                arcpy.AddMessage(f"Checking layer: {lyr.name}")
+
+                if not lyr.isFeatureLayer:
+                    arcpy.AddMessage("  - skipped: not a feature layer")
+                    continue
+
+                desc = arcpy.Describe(lyr)
+                arcpy.AddMessage(f"  - shapeType: {desc.shapeType}")
+
+                data_source = getattr(lyr, "dataSource", None)
+                arcpy.AddMessage(f"  - data source: {data_source}")
+
+                field_target = data_source if data_source else lyr
+                field_names = [field.name for field in arcpy.ListFields(field_target)]
+                arcpy.AddMessage(f"  - fields: {field_names}")
+
+                if not _is_refresh_point_event_layer(lyr):
+                    arcpy.AddMessage("  - skipped by _is_refresh_point_event_layer")
+                    continue
+
+                if not data_source or data_source in seen_sources:
+                    arcpy.AddMessage("  - skipped: no data source or already seen")
+                    continue
+
+                seen_sources.add(data_source)
+                discovered.append(data_source)
+                arcpy.AddMessage("  - accepted")
+
+            except Exception as e:
+                arcpy.AddMessage(f"  - error reading layer: {e}")
+                continue
+
+    return discovered, searched_maps
+
+
 class Toolbox(object):
     def __init__(self):
         self.label = "Stationing and Linear Referencing Tools"
         self.alias = "stationingtools"
-        self.tools = [GenerateStationing]
+        self.tools = [GenerateStationing, RefreshLeaders]
+
+
+class RefreshLeaders(object):
+    def __init__(self):
+        self.label = "Refresh Leaders"
+        self.description = "Refresh leader graphics for the current map series page"
+        self.canRunInBackground = False
+
+    def getParameterInfo(self):
+        return []
+
+    def isLicensed(self):
+        return True
+
+    def execute(self, parameters, messages):
+        import arcpy
+        from leader_tools_v3 import leaders_to_map_series
+
+        aprx = arcpy.mp.ArcGISProject("CURRENT")
+
+        # Find layout with enabled map series
+        target_layout = None
+        for lyt in aprx.listLayouts():
+            try:
+                if lyt.mapSeries and lyt.mapSeries.enabled:
+                    target_layout = lyt
+                    break
+            except:
+                continue
+
+        if not target_layout:
+            arcpy.AddError("No layout with an enabled map series found.")
+            return
+
+        # Find the correct map frame dynamically
+        map_frames = target_layout.listElements("MAPFRAME_ELEMENT")
+        if not map_frames:
+            arcpy.AddError("No map frames found in the layout.")
+            return
+
+        # First try to find one whose name suggests it is the main map
+        preferred_frames = [mf for mf in map_frames if "main" in mf.name.lower()]
+
+        if preferred_frames:
+            map_frame = preferred_frames[0]
+        else:
+            # Fallback: use the largest map frame, not the mini map
+            map_frame = max(
+                map_frames, key=lambda mf: mf.elementWidth * mf.elementHeight
+            )
+
+        arcpy.AddMessage(f"Using map frame: {map_frame.name}")
+
+        map_obj = map_frame.map
+        map_series = target_layout.mapSeries
+
+        current_page = map_series.currentPageNumber
+        arcpy.AddMessage(f"Refreshing leaders for page {current_page}")
+
+        # Search the layout map first, then fall back to the active map and any
+        # other project maps. This makes refresh robust even when generation
+        # added outputs to a different map than the layout currently references.
+        unique_point_event_features, searched_maps = (
+            _discover_refresh_point_event_features(aprx, map_obj)
+        )
+
+        if not unique_point_event_features:
+            arcpy.AddError(
+                "No point event layers found. Maps searched: "
+                + ", ".join(searched_maps)
+            )
+            return
+
+        arcpy.AddMessage("Detected point event layers:")
+        for fc in unique_point_event_features:
+            arcpy.AddMessage(f" - {fc}")
+
+        leaders_to_map_series(
+            layout_name=target_layout.name,
+            map_frame=map_frame.name,
+            point_event_features=unique_point_event_features,
+        )
 
 
 class GenerateStationing(object):
@@ -674,6 +879,10 @@ class GenerateStationing(object):
                 output_gdb=output_gdb,
                 analysis_layers=analysis_layers,
             )
+            messages.addMessage(
+                "Raw point intersections: "
+                + str(crossing_outputs.get("point_intersections", []))
+            )
 
             event_outputs = locate_intersections_and_overlaps(
                 route_fc=outputs["route_fc"],
@@ -682,6 +891,10 @@ class GenerateStationing(object):
                 out_gdb=output_gdb,
                 point_intersections=crossing_outputs["point_intersections"],
                 line_overlaps=crossing_outputs["line_overlaps"],
+            )
+            messages.addMessage(
+                "Point event tables: "
+                + str(event_outputs.get("point_event_tables", []))
             )
 
             add_chainage_to_event_tables(
@@ -695,6 +908,11 @@ class GenerateStationing(object):
                 output_gdb=output_gdb,
                 point_event_tables=event_outputs["point_event_tables"],
                 line_event_tables=event_outputs["line_event_tables"],
+                point_intersections=crossing_outputs["point_intersections"],
+            )
+            messages.addMessage(
+                "Point event features: "
+                + str(event_feature_outputs.get("point_event_features", []))
             )
 
         else:
@@ -702,6 +920,9 @@ class GenerateStationing(object):
 
         add_output_to_current_map(event_feature_outputs)
         add_output_to_current_map(outputs)
+
+        layout_result = None
+        layout = None
 
         if create_layout:
             messages.addMessage("Generating layout...")
@@ -719,36 +940,25 @@ class GenerateStationing(object):
                 map_series_overlap=map_series_overlap,
             )
 
-        layout = layout_result["layout"]
+            layout = layout_result["layout"]
 
-        if event_feature_outputs and event_feature_outputs.get("point_event_features"):
-            draw_stationing_leaders_for_points(
-                layout=layout,
-                map_frame=layout_result["main_map_frame"],
-                point_event_features=event_feature_outputs["point_event_features"],
-                clear_existing=True,
-            )
+        # LEADERS
+        if (
+            create_layout
+            and event_feature_outputs
+            and event_feature_outputs.get("point_event_features")
+        ):
 
-            if create_map_series and layout_result.get("map_series_info"):
-                map_series = layout_result["map_series_info"]["map_series"]
-
-                # clear once before loop if you want only one active page preview
-                for page_num in range(1, map_series.pageCount + 1):
-                    map_series.currentPageNumber = page_num
-                    messages.addMessage(f"Processing page {page_num}...")
-
-                    draw_stationing_leaders_for_points(
-                        layout=layout_result["layout"],
-                        map_frame=layout_result["main_map_frame"],
-                        point_event_features=event_feature_outputs[
-                            "point_event_features"
-                        ],
-                        page_id=page_num,
-                        clear_existing=False,
-                    )
-
-                    leaders_to_map_series(
-                        layout_name=layout_name,
-                        map_frame=layout_result["main_map_frame"],
-                        point_event_features=event_feature_outputs["point_event_features"],
-                    )
+            if create_map_series:
+                leaders_to_map_series(
+                    layout_name=layout_name,
+                    map_frame=layout_result["main_map_frame"].name,
+                    point_event_features=event_feature_outputs["point_event_features"],
+                )
+            else:
+                draw_stationing_leaders_for_points(
+                    layout=layout,
+                    map_frame=layout_result["main_map_frame"],
+                    point_event_features=event_feature_outputs["point_event_features"],
+                    clear_existing=True,
+                )

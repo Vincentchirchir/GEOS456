@@ -1,413 +1,303 @@
-# import arcpy
-
-# """  We are going to create a function that looks for a point features that are visible on the current map
-# Then read their chainage values from chainage field
-# Then place the labels above the map frame and draw vertical leader lines from the point up to the label
-# """
-
-
-# def draw_stationing_leaders_for_points(
-#     layout,  # the layout where the text and leader will be added
-#     map_frame,  # map frame nside the layout. Needed coz function must know what geogrphic area is visible
-#     point_event_features,  # list of point features. They are stored in events tools
-#     page_id=None,  # page identifier to be used in map series
-#     map_series=None,  # will use when applying the same leader to map series
-#     clear_existing=False,  # This will deletes old leader and label elements before drawing another one. Otherwise everytime you run thetool, the previous leader will still be existing
-# ):  # below if function checks if their is an existing layout. If not, show warning and stops function with return
-#     if not layout:
-#         arcpy.AddWarning("No active layout found")
-#         return
-
-#     # below extent gets the current visible map extent of the map frame
-#     extent = map_frame.camera.getExtent()
-
-#     # Clear old leders and labels if existing
-#     # The function will loop through layout elements and checks for leader and lbels
-#     if clear_existing:
-#         for element in layout.listElements():
-#             try:
-#                 if element.name.startswith("leader_line_") or element.name.startswith(
-#                     "leader_label_"
-#                 ):  # Leader_line is the line drawn from point upwards, leader_label is the chainge/ intersection of that point
-#                     layout.deleteElement(element)
-#             except Exception:
-#                 pass
-
-#     # the following is an empty list that will store points as the code is looping through the feature/route
-#     visible_points = []
-
-#     # The following code will loop through the point events features that are created and retun in event_tools.py
-#     # That stores the points of intersecting and overlaping features
-#     for point_fc in point_event_features:
-#         if not point_fc or not arcpy.Exists(
-#             point_fc
-#         ):  # This checks whhether the feature class path exists or valid, if no there, it skips and moves to next feature using continue
-#             continue
-
-#         # Once the code has looped through the point feature, it wants to check fields to see if chainage is there. Coz chainage is what will be used to label
-#         fields = [
-#             f.name for f in arcpy.ListFields(point_fc)
-#         ]  # Remeber we are looking for chainge field.
-#         if (
-#             "Chainage" not in fields
-#         ):  # if chainage field is not in the fields, meaning we are not looking for that feature. skip and continue
-#             continue
-
-#         # Now, as the script is looking for chainage field, it will also look for geometry object. And centroid of the point where leader line will be place.
-#         # Geometry will be used by script to store the location of that point
-#         # Coz when we store geometry of a point, it becomes unique and dynamic.
-
-#         with arcpy.da.SearchCursor(point_fc, ["SHAPE@", "Chainage"]) as Scursor:
-#             for shape, chainage in Scursor:
-#                 if not shape or chainage in [None, ""]:
-#                     continue
-
-#                 point_centroid = (
-#                     shape.centroid
-#                 )  # This gets the centroid of the geometry
-
-#                 # the following if statemment checks if the point lies inside the current map extent now that we store shape/geomerty
-#                 if (
-#                     extent.XMin <= point_centroid.X <= extent.XMax
-#                     and extent.YMin <= point_centroid.Y <= extent.YMax
-#                 ):
-#                     visible_points.append(
-#                         (point_centroid.X, point_centroid.Y, str(chainage))
-#                     )  # if the point is there, it is appended/stored in the list
-
-#     # if there is not point, exits with a message
-#     if not visible_points:
-#         arcpy.AddMessage("No visible points found iin the current extent")
-#         return
-
-#     # For the visible points that were store in the list we created above
-#     # We want to sort the points left to right
-#     # This will help the labels appear in a logical order across the top section
-#     visible_points.sort(
-#         key=lambda x: x[0]
-#     )  # this sorts points by x coordinates.Meaning they will be processed from left to right
-
-#     # define the top section position.How far will the line go up? Height
-#     # Defined using Y coordinates. Like graph. X horizontal, Y vertical
-#     top_section_y = (
-#         map_frame.elementPositionY + map_frame.elementHeight + 0.18
-#     )  # this 0.18 pushes the labels a bit above the to of the map frame
-
-#     stagger_step = 0.10  # this is the vertical distance between the labels. It gives room of breathing if they will be staggered
-
-#     # Now that we have looked for points, names, and ready to label, lets look for the current active map
-#     aprx = arcpy.mp.ArcGISProject("CURRENT")
-
-#     created_leaders_count = 0  # how many leaders are created? It starts at zero. And everytime a leader is created, it increases
-
-#     # You remember the visible points we stored? Lets loop through the points now
-#     # enumerate gives:
-#     # i = index number (0, 1, 2, ...)
-#     # map_x, map_y, label_text = values stored in the list
-#     # i is later used for:
-#     # unique naming
-#     # staggering labels
-
-#     placed_labels = []
-#     min_spacing = 0.6
-#     shift_pattern = [0, 0.3, -0.3, 0.6, -0.6, 0.9, -0.9, 1.2, -1.2]
-#     for i, (map_x, map_y, label_text) in enumerate(visible_points):
-#         try:
-#             page_x = (
-#                 map_frame.elementPositionX
-#                 + ((map_x - extent.XMin) / (extent.XMax - extent.XMin))
-#                 * map_frame.elementWidth
-#             )
-
-#             page_y = (
-#                 map_frame.elementPositionY
-#                 + ((map_y - extent.YMin) / (extent.YMax - extent.YMin))
-#                 * map_frame.elementHeight
-#             )
-#         except Exception as e:
-#             arcpy.AddWarning(
-#                 f"Could not convert map coordinates to page coordinates: {e}"
-#             )
-#             continue
-
-#         # The above code again:
-#         # Remember the points were captured in geometry/map coordinates but layout elements must be placed in not as coordinates
-#         # So the code converts the point’s geographic/map position into its matching page position inside the map frame.
-#         # page_x works like this:
-#         # Find how far the point is across the map extent horizontally
-#         # Convert that proportion into page width
-#         # Add the map frame’s page X origin
-#         # page_y
-#         # Find how far the point is up the extent
-#         # Convert that proportion into page height
-#         # Add the map frame’s page Y origin
-
-#         label_y = top_section_y + (i % 3) * stagger_step
-
-#         base_offset = (i % 5 - 2) * 0.15
-#         label_x = page_x + base_offset
-#         for shift in shift_pattern:
-#             trial_x = page_x + shift
-#             collision = False
-
-#             for prev_x, prev_y in placed_labels:
-#                 too_close_x = abs(prev_x - trial_x) < min_spacing
-#                 too_close_y = abs(prev_y - label_y) < 0.15
-
-#                 if too_close_x and too_close_y:
-#                     collision = True
-#                     break
-
-#             if not collision:
-#                 label_x = trial_x
-#                 break
-
-#         # the above label_y code places 3 staggered rows.
-#         # i % 3 gives repeating values:
-#         # 0, 1, 2, 0, 1, 2
-#         # So label Y becomes:
-#         # row 1 = base Y
-#         # row 2 = base Y + 0.10
-#         # row 3 = base Y + 0.20
-#         # Then repeats.
-#         # Why? To reduce overlap when labels are close together horizontally.
-
-#         try:
-#             text = aprx.createTextElement(
-#                 layout, arcpy.Point(label_x, label_y), "POINT", label_text, 10
-#             )
-#             text.name = (
-#                 f"leader_label_{page_id}_{i}"
-#                 if page_id is not None
-#                 else f"leader_label_{i}"
-#             )
-
-#             # The above code gives the label a unique name. Examples:
-#             # LR_Label_1_0, LR_Label_1_1, Or if no page ID:
-#             # LR_Label_0, LR_Label_1
-#             # Why name it? Because later we will need for map series and mabnage it per page
-
-#             text_cim = text.getDefinition("V3")  # it gets the element symbol structure
-#             text_cim.graphic.symbol.symbol.fontFamilyName = "Tahoma"  # ets font style
-#             text_cim.graphic.symbol.symbol.height = 10  # sets text size
-#             text.setDefinition(text_cim)  # applies the updated style
-#             # The above code edits the symbol like font size, name
-#         except Exception as e:
-#             arcpy.AddWarning(f"Could not create text element for {label_text}: {e}")
-#             continue
-
-#         # lets now build line line
-#         # The following code creates a vertical line from the point position up toward the label
-#         try:
-#             elbow_y = label_y - 0.08
-
-#             leader_geom = arcpy.Polyline(
-#                 arcpy.Array(
-#                     [
-#                         arcpy.Point(
-#                             page_x, page_y
-#                         ),  # start point. This is the page location corresponding to the actual point on the map
-#                         arcpy.Point(label_x, label_y - 0.03),  # End point
-#                         arcpy.Point(label_x, elbow_y),
-#                     ]
-#                 )
-#             )
-
-#             # creating a graphic element for the leader
-#             leader = aprx.createGraphicElement(
-#                 layout,
-#                 leader_geom,
-#                 name=(
-#                     f"leader_line_{page_id}_{i}"
-#                     if page_id is not None
-#                     else f"leader_line_{i}"
-#                 ),
-#             )
-
-#             leader_cim = leader.getDefinition("V3")
-#             leader_cim.graphic.symbol.symbol.symbolLayers[0].width = 0.5
-#             leader.setDefinition(leader_cim)
-
-#             placed_labels.append((label_x, label_y))
-#             created_leaders_count += 1
-#         except Exception as e:
-#             arcpy.AddWarning(f"Could not create leader for {label_text}: {e}")
-
-#     arcpy.AddMessage(
-#         f"Leader labels drawn for {created_leaders_count} visible points"
-#         + (f" on page {page_id}." if page_id is not None else ".")
-#     )
-
-
-# def leaders_to_map_series(
-#     layout_name,
-#     map_frame,
-#     point_event_features,
-# ):
-#     aprx = arcpy.mp.ArcGISProject("CURRENT")
-
-#     # get the layout first before going to map series
-#     layouts = aprx.listLayouts(layout_name)
-#     if not layouts:
-#         raise ValueError(
-#             f"Layout '{layout_name}' not found"
-#         )  # if layout is not there, then raise error
-
-#     layout = layouts[0]  # This
-
-#     # Now lets get the map frame
-#     map_frames = layout.listElements("MAPFRAME_ELEMENT", map_frame)
-#     if not map_frames:
-#         raise ValueError(f"Map frame '{map_frame}' not found in layout '{layout_name}'")
-
-#     map_frame_name = map_frames[0]
-
-#     # Check whether map series is checked
-#     map_series = layout.mapSeries
-
-#     if map_series and map_series.enabled:
-#         arcpy.AddMessage(
-#             f"Map series detected. Applying leaders to {map_series.pageCount} pages"
-#         )
-
-#         for page_number in range(1, map_series.pageCount + 1):
-#             map_series.currentPageNumber = page_number
-
-#             # now let us draw line on map series
-#             draw_stationing_leaders_for_points(
-#                 layout=layout,  # this is the layout we earlier created
-#                 map_frame_name=map_frame_name,  # map frame or the current project
-#                 point_event_features=point_event_features,  # this are intersection and overlap points
-#                 page_id=page_number,  # page numbers in map series
-#                 clear_existing=True,  # everytime you run the script, delete existing leaders and labels so it can draw a new one
-#             )
-
-#             arcpy.AddMessage(f"Finished page {page_number}")
-#     else:
-#         arcpy.AddMessage("No enabled map series found. Applying leaders once")
-
-#         draw_stationing_leaders_for_points(
-#             layout=layout,
-#             map_frame_name=map_frame_name,
-#             point_event_features=point_event_features,
-#             page_id=page_number,
-#             clear_existing=True,
-#         )
-
-
 import arcpy
+import math
 
-"""  
-We are going to create a function that looks for a point features that are visible on the current map 
-Then read their chainage values from chainage field
-Then place the labels above the map frame and draw vertical leader lines from the point up to the label
-"""
+
+def _leader_name_matches_page(name, page_id):
+    # Leaders are named with the page number so we can later identify which
+    # layout elements belong to which map series page.
+    prefixes = (
+        f"leader_line_{page_id}_",
+        f"leader_label_{page_id}_",
+    )
+    return any(name.startswith(prefix) for prefix in prefixes)
+
+
+def _clear_stationing_leaders(layout, page_id=None):
+    for element in layout.listElements():
+        try:
+            name = getattr(element, "name", "") or ""
+            is_leader_element = name.startswith("leader_line_") or name.startswith(
+                "leader_label_"
+            )
+
+            if not is_leader_element:
+                continue
+
+            # With page_id=None we remove every leader. Otherwise we only remove
+            # the leader elements that belong to the requested page.
+            if page_id is None or _leader_name_matches_page(name, page_id):
+                layout.deleteElement(element)
+        except Exception:
+            pass
+
+
+def _set_stationing_leader_visibility(layout, active_page_id=None):
+    for element in layout.listElements():
+        try:
+            name = getattr(element, "name", "") or ""
+            is_leader_element = name.startswith("leader_line_") or name.startswith(
+                "leader_label_"
+            )
+
+            if not is_leader_element:
+                continue
+
+            # ArcGIS layout graphic/text elements are shared across the layout,
+            # so we manually hide leaders from non-active pages instead of
+            # expecting map series to filter them for us.
+            if active_page_id is None:
+                element.visible = True
+            else:
+                element.visible = _leader_name_matches_page(name, active_page_id)
+        except Exception:
+            pass
+
+
+def _build_map_frame_transform(map_frame):
+    # camera.getExtent() returns an axis-aligned envelope. When the map frame is
+    # rotated, that envelope is larger than the actual visible page rectangle,
+    # so we derive the visible width/height in map units before placing leaders.
+    camera = map_frame.camera
+    extent = camera.getExtent()
+    frame_width = float(map_frame.elementWidth)
+    frame_height = float(map_frame.elementHeight)
+    extent_width = extent.XMax - extent.XMin
+    extent_height = extent.YMax - extent.YMin
+
+    if frame_width <= 0 or frame_height <= 0:
+        raise ValueError("Map frame width and height must be greater than zero.")
+
+    if extent_width <= 0 or extent_height <= 0:
+        raise ValueError("Map frame extent width and height must be greater than zero.")
+
+    heading = float(getattr(camera, "heading", 0.0) or 0.0)
+    angle_rad = math.radians(heading)
+    abs_cos = abs(math.cos(angle_rad))
+    abs_sin = abs(math.sin(angle_rad))
+    frame_aspect = frame_width / frame_height
+
+    visible_width = None
+    visible_height = None
+
+    try:
+        spatial_ref = getattr(getattr(map_frame, "map", None), "spatialReference", None)
+        meters_per_unit = float(getattr(spatial_ref, "metersPerUnit", 0.0) or 0.0)
+        scale = float(getattr(camera, "scale", 0.0) or 0.0)
+
+        # These layouts are built in inches, so we can convert the map frame
+        # size to ground distance directly from the current page scale. This is
+        # more reliable for rotated map-series pages than reverse-solving from
+        # the axis-aligned extent envelope.
+        if meters_per_unit > 0 and scale > 0:
+            inches_to_meters = 0.0254
+            visible_width = (frame_width * scale * inches_to_meters) / meters_per_unit
+            visible_height = (frame_height * scale * inches_to_meters) / meters_per_unit
+    except Exception:
+        visible_width = None
+        visible_height = None
+
+    if not visible_width or not visible_height:
+        visible_height_from_width = extent_width / ((frame_aspect * abs_cos) + abs_sin)
+        visible_height_from_height = extent_height / (
+            (frame_aspect * abs_sin) + abs_cos
+        )
+        visible_height = (visible_height_from_width + visible_height_from_height) / 2.0
+        visible_width = visible_height * frame_aspect
+
+    camera_x = getattr(camera, "X", None)
+    camera_y = getattr(camera, "Y", None)
+    center_x = (
+        float(camera_x)
+        if camera_x not in [None, ""]
+        else (extent.XMin + extent.XMax) / 2.0
+    )
+    center_y = (
+        float(camera_y)
+        if camera_y not in [None, ""]
+        else (extent.YMin + extent.YMax) / 2.0
+    )
+
+    return {
+        "extent": extent,
+        "heading": heading,
+        "angle_rad": angle_rad,
+        "center_x": center_x,
+        "center_y": center_y,
+        "frame_x": float(map_frame.elementPositionX),
+        "frame_y": float(map_frame.elementPositionY),
+        "frame_width": frame_width,
+        "frame_height": frame_height,
+        "visible_width": visible_width,
+        "visible_height": visible_height,
+    }
+
+
+def _map_point_to_page(transform, map_x, map_y):
+    # Rotate the point into the page-aligned axes, then normalize it into the
+    # map frame's 0-1 range so the final page position honors page rotation.
+    dx = map_x - transform["center_x"]
+    dy = map_y - transform["center_y"]
+    angle_rad = transform["angle_rad"]
+
+    rotated_x = (dx * math.cos(angle_rad)) - (dy * math.sin(angle_rad))
+    rotated_y = (dx * math.sin(angle_rad)) + (dy * math.cos(angle_rad))
+
+    x_ratio = (rotated_x / transform["visible_width"]) + 0.5
+    y_ratio = (rotated_y / transform["visible_height"]) + 0.5
+
+    page_x = transform["frame_x"] + (x_ratio * transform["frame_width"])
+    page_y = transform["frame_y"] + (y_ratio * transform["frame_height"])
+    is_visible = -1e-6 <= x_ratio <= 1.000001 and -1e-6 <= y_ratio <= 1.000001
+
+    return page_x, page_y, is_visible
 
 
 def draw_stationing_leaders_for_points(
     layout,  # the layout where the text and leader will be added
-    map_frame,  # map frame inside the layout. Needed coz function must know what geographic area is visible
+    map_frame,  # map frame nside the layout. Needed coz function must know what geogrphic area is visible
     point_event_features,  # list of point features. They are stored in events tools
     page_id=None,  # page identifier to be used in map series
     map_series=None,  # will use when applying the same leader to map series
-    clear_existing=False,  # deletes old leader and label elements before drawing another one
-):
-    # below if function checks if there is an existing layout
+    clear_existing=False,  # This will deletes old leader and label elements before drawing another one. Otherwise everytime you run thetool, the previous leader will still be existing
+):  # below if function checks if their is an existing layout. If not, show warning and stops function with return
     if not layout:
         arcpy.AddWarning("No active layout found")
         return
 
-    # below extent gets the current visible map extent of the map frame
-    extent = map_frame.camera.getExtent()
+    transform = _build_map_frame_transform(map_frame)
+    extent = transform["extent"]
+    arcpy.AddMessage(
+        f"Leader transform extent: XMin={extent.XMin}, XMax={extent.XMax}, "
+        f"YMin={extent.YMin}, YMax={extent.YMax}, Heading={transform['heading']}"
+    )
 
-    # Clear old leaders and labels if existing
+    # Clear old leders and labels if existing
+    # The function will loop through layout elements and checks for leader and lbels
     if clear_existing:
-        for element in layout.listElements():
-            try:
-                if element.name.startswith("leader_line_") or element.name.startswith(
-                    "leader_label_"
-                ):
-                    layout.deleteElement(element)
-            except Exception:
-                pass
+        _clear_stationing_leaders(layout, page_id=page_id)
 
-    # empty list that will store visible points
+    # the following is an empty list that will store points as the code is looping through the feature/route
     visible_points = []
 
-    # loop through point event features
+    # The following code will loop through the point events features that are created and retun in event_tools.py
+    # That stores the points of intersecting and overlaping features
     for point_fc in point_event_features:
-        if not point_fc or not arcpy.Exists(point_fc):
+        if not point_fc or not arcpy.Exists(
+            point_fc
+        ):  # This checks whhether the feature class path exists or valid, if no there, it skips and moves to next feature using continue
             continue
 
-        # check if Chainage field exists
-        fields = [f.name for f in arcpy.ListFields(point_fc)]
-        if "Chainage" not in fields:
+        # Once the code has looped through the point feature, it wants to check fields to see if chainage is there. Coz chainage is what will be used to label
+        fields = [
+            f.name for f in arcpy.ListFields(point_fc)
+        ]  # Remeber we are looking for chainge field.
+        if (
+            "Chainage" not in fields
+        ):  # if chainage field is not in the fields, meaning we are not looking for that feature. skip and continue
             continue
 
-        # get geometry and chainage
+        # Read the true point geometry from the feature class. The point feature
+        # already carries Chainage, so the leader can anchor to the raw crossing
+        # instead of a route-rebuilt surrogate point.
         with arcpy.da.SearchCursor(point_fc, ["SHAPE@", "Chainage"]) as Scursor:
             for shape, chainage in Scursor:
                 if not shape or chainage in [None, ""]:
                     continue
 
-                point_centroid = shape.centroid
+                # Build list of points (handles multipoint + point)
+                point_list = []
 
-                # check if point lies inside current extent
-                if (
-                    extent.XMin <= point_centroid.X <= extent.XMax
-                    and extent.YMin <= point_centroid.Y <= extent.YMax
-                ):
-                    visible_points.append(
-                        (point_centroid.X, point_centroid.Y, str(chainage))
+                if shape.type.lower() == "multipoint":
+                    for p in shape:
+                        if p:
+                            point_list.append(p)
+                else:
+                    if shape.firstPoint:
+                        point_list.append(shape.firstPoint)
+
+                for point_geom in point_list:
+                    arcpy.AddMessage(f"Checking point FC: {point_fc}")
+                    arcpy.AddMessage(
+                        f"Chainage={chainage}, X={point_geom.X}, Y={point_geom.Y}"
                     )
 
-    # if there is no point
+                    try:
+                        page_x, page_y, is_visible = _map_point_to_page(
+                            transform, point_geom.X, point_geom.Y
+                        )
+
+                        arcpy.AddMessage(
+                            f"Converted to page coords: page_x={page_x}, page_y={page_y}, visible={is_visible}"
+                        )
+
+                        if not is_visible:
+                            continue
+
+                        visible_points.append((page_x, page_y, str(chainage)))
+
+                    except Exception as e:
+                        arcpy.AddWarning(f"Conversion error: {e}")
+                        continue
+
+    arcpy.AddMessage(f"Point feature classes received: {point_event_features}")
+    arcpy.AddMessage(f"Visible points count before draw: {len(visible_points)}")
     if not visible_points:
-        arcpy.AddMessage("No visible points found in the current extent")
+        arcpy.AddMessage("No visible points found iin the current extent")
         return
 
-    # sort left to right
-    visible_points.sort(key=lambda x: x[0])
+    # For the visible points that were store in the list we created above
+    # We sort by page X so the label order stays left-to-right even when the
+    # map frame is rotated by map series.
 
-    # define top section position
-    top_section_y = map_frame.elementPositionY + map_frame.elementHeight + 0.18
+    xs = [pt[0] for pt in visible_points]
+    ys = [pt[1] for pt in visible_points]
 
-    stagger_step = 0.10
+    x_range = max(xs) - min(xs)
+    y_range = max(ys) - min(ys)
 
+    is_vertical = y_range > x_range
+
+    # visible_points.sort(key=lambda x: x[0])  # this sorts points by x coordinates.Meaning they will be processed from left to right
+
+    if is_vertical:
+        visible_points.sort(key=lambda x: x[1])  # bottom → top
+    else:
+        visible_points.sort(key=lambda x: x[0])  # left → right
+
+    # define the top section position.How far will the line go up? Height
+    # Defined using Y coordinates. Like graph. X horizontal, Y vertical
+    leader_band_y = map_frame.elementPositionY + map_frame.elementHeight + 0.12
+    label_base_y = (
+        leader_band_y + 0.08
+    )  # this  pushes the labels a bit above the to of the map frame
+
+    stagger_step = 0.10  # this is the vertical distance between the labels. It gives room of breathing if they will be staggered
+
+    # Now that we have looked for points, names, and ready to label, lets look for the current active map
     aprx = arcpy.mp.ArcGISProject("CURRENT")
 
-    created_leaders_count = 0
+    created_leaders_count = 0  # how many leaders are created? It starts at zero. And everytime a leader is created, it increases
+
+    # You remember the visible points we stored? Lets loop through the points now
+    # enumerate gives:
+    # i = index number (0, 1, 2, ...)
+    # page_x, page_y, label_text = values stored in the list
+    # i is later used for:
+    # unique naming
+    # staggering labels
 
     placed_labels = []
     min_spacing = 0.6
-    shift_pattern = [0, 0.3, -0.3, 0.6, -0.6, 0.9, -0.9, 1.2, -1.2]
+    shift_pattern = [0, 0.2, -0.2, 0.4, -0.4]
+    for i, (page_x, page_y, label_text) in enumerate(visible_points):
+        # label_y = label_base_y + (i % 5) * stagger_step
+        label_y = label_base_y
 
-    for i, (map_x, map_y, label_text) in enumerate(visible_points):
-        try:
-            # convert map coordinates to page coordinates
-            page_x = (
-                map_frame.elementPositionX
-                + ((map_x - extent.XMin) / (extent.XMax - extent.XMin))
-                * map_frame.elementWidth
-            )
-
-            page_y = (
-                map_frame.elementPositionY
-                + ((map_y - extent.YMin) / (extent.YMax - extent.YMin))
-                * map_frame.elementHeight
-            )
-        except Exception as e:
-            arcpy.AddWarning(
-                f"Could not convert map coordinates to page coordinates: {e}"
-            )
-            continue
-
-        # stagger labels
-        label_y = top_section_y + (i % 3) * stagger_step
-
-        label_x = page_x
-
-        # collision avoidance
+        # base_offset = (i % 5 - 2) * 0.15
+        # label_x = page_x + base_offset
+        # label_x = page_x
+        label_x = map_frame.elementPositionX + map_frame.elementWidth / 2
+        label_y = label_base_y
         for shift in shift_pattern:
             trial_x = page_x + shift
             collision = False
@@ -424,39 +314,65 @@ def draw_stationing_leaders_for_points(
                 label_x = trial_x
                 break
 
-        # create label
+        # the above label_y code places 3 staggered rows.
+        # i % 3 gives repeating values:
+        # 0, 1, 2, 0, 1, 2
+        # So label Y becomes:
+        # row 1 = base Y
+        # row 2 = base Y + 0.10
+        # row 3 = base Y + 0.20
+        # Then repeats.
+        # Why? To reduce overlap when labels are close together horizontally.
+
         try:
             text = aprx.createTextElement(
                 layout, arcpy.Point(label_x, label_y), "POINT", label_text, 10
             )
+            text_cim = text.getDefinition("V3")
+
+            #  anchor control
+            text_cim.anchor = "CenterPoint"
+
+            #
+            text.setDefinition(text_cim)
             text.name = (
                 f"leader_label_{page_id}_{i}"
                 if page_id is not None
                 else f"leader_label_{i}"
             )
 
-            text_cim = text.getDefinition("V3")
-            text_cim.graphic.symbol.symbol.fontFamilyName = "Tahoma"
-            text_cim.graphic.symbol.symbol.height = 10
-            text.setDefinition(text_cim)
+            # The above code gives the label a unique name. Examples:
+            # LR_Label_1_0, LR_Label_1_1, Or if no page ID:
+            # LR_Label_0, LR_Label_1
+            # Why name it? Because later we will need for map series and mabnage it per page
+
+            text_cim = text.getDefinition("V3")  # it gets the element symbol structure
+            text_cim.graphic.symbol.symbol.fontFamilyName = "Tahoma"  # ets font style
+            text_cim.graphic.symbol.symbol.height = 10  # sets text size
+            text.setDefinition(text_cim)  # applies the updated style
+            # The above code edits the symbol like font size, name
         except Exception as e:
             arcpy.AddWarning(f"Could not create text element for {label_text}: {e}")
             continue
 
-        # create elbow leader
+        # lets now build line line
+        # The following code creates a vertical line from the point position up toward the label
         try:
-            elbow_y = label_y - 0.08
+            # go vertically up from the point
+            leader_start_y = page_y
 
             leader_geom = arcpy.Polyline(
                 arcpy.Array(
                     [
-                        arcpy.Point(page_x, page_y),  # start (point)
-                        arcpy.Point(label_x, elbow_y),  # elbow
-                        arcpy.Point(label_x, label_y - 0.03),  # near label
+                        arcpy.Point(page_x, leader_start_y),  #  start at point
+                        arcpy.Point(page_x, leader_band_y),
+                        arcpy.Point(label_x, leader_band_y),
+                        # arcpy.Point(label_x, leader_band_y), # small top tick
                     ]
                 )
             )
 
+            # creating a graphic element for the leader
             leader = aprx.createGraphicElement(
                 layout,
                 leader_geom,
@@ -473,7 +389,6 @@ def draw_stationing_leaders_for_points(
 
             placed_labels.append((label_x, label_y))
             created_leaders_count += 1
-
         except Exception as e:
             arcpy.AddWarning(f"Could not create leader for {label_text}: {e}")
 
@@ -483,70 +398,6 @@ def draw_stationing_leaders_for_points(
     )
 
 
-# def leaders_to_map_series(
-#     layout_name,
-#     map_frame,
-#     point_event_features,
-# ):
-#     aprx = arcpy.mp.ArcGISProject("CURRENT")
-
-#     # get the layout first
-#     layouts = aprx.listLayouts(layout_name)
-#     if not layouts:
-#         raise ValueError(f"Layout '{layout_name}' not found")
-
-#     layout = layouts[0]
-
-#     # below we are allowing the function to accept either:
-#     # 1. a real map frame object passed from another function
-#     # 2. or a map frame name string
-#     if hasattr(map_frame, "camera") and hasattr(map_frame, "elementWidth"):
-#         target_map_frame = map_frame
-#     elif isinstance(map_frame, str):
-#         map_frames = layout.listElements("MAPFRAME_ELEMENT", map_frame)
-#         if not map_frames:
-#             raise ValueError(
-#                 f"Map frame '{map_frame}' not found in layout '{layout_name}'"
-#             )
-#         target_map_frame = map_frames[0]
-#     else:
-#         raise ValueError(
-#             f"map_frame must be either a MapFrame object or a map frame name string, got: {type(map_frame)}"
-#         )
-
-#     # check if map series exists and is enabled
-#     map_series = layout.mapSeries
-
-#     if map_series and map_series.enabled:
-#         current_page = map_series.currentPageNumber
-
-#         arcpy.AddMessage(
-#             f"Map series detected. Drawing leaders only for current page {current_page}"
-#         )
-
-#         # clear existing leaders first, then draw only for the current page
-#         draw_stationing_leaders_for_points(
-#             layout=layout,
-#             map_frame=target_map_frame,
-#             point_event_features=point_event_features,
-#             page_id=current_page,
-#             clear_existing=True,
-#         )
-
-#         arcpy.AddMessage(f"Finished drawing leaders for current page {current_page}")
-
-#     else:
-#         arcpy.AddMessage("No enabled map series found. Drawing leaders once")
-
-#         draw_stationing_leaders_for_points(
-#             layout=layout,
-#             map_frame=target_map_frame,
-#             point_event_features=point_event_features,
-#             page_id=None,
-#             clear_existing=True,
-#         )
-
-
 def leaders_to_map_series(
     layout_name,
     map_frame,
@@ -554,63 +405,93 @@ def leaders_to_map_series(
 ):
     aprx = arcpy.mp.ArcGISProject("CURRENT")
 
-    # get layout
+    # get the layout first before going to map series
     layouts = aprx.listLayouts(layout_name)
     if not layouts:
-        raise ValueError(f"Layout '{layout_name}' not found")
-
-    layout = layouts[0]
-
-    #  accept either MapFrame object OR name
-    if hasattr(map_frame, "camera") and hasattr(map_frame, "elementWidth"):
-        target_map_frame = map_frame
-    elif isinstance(map_frame, str):
-        map_frames = layout.listElements("MAPFRAME_ELEMENT", map_frame)
-        if not map_frames:
-            raise ValueError(
-                f"Map frame '{map_frame}' not found in layout '{layout_name}'"
-            )
-        target_map_frame = map_frames[0]
-    else:
         raise ValueError(
-            f"map_frame must be a MapFrame object or a name, got: {type(map_frame)}"
-        )
+            f"Layout '{layout_name}' not found"
+        )  # if layout is not there, then raise error
 
+    layout = layouts[0]  # This
+
+    # Now lets get the map frame
+    map_frames = layout.listElements("MAPFRAME_ELEMENT", map_frame)
+    if not map_frames:
+        raise ValueError(f"Map frame '{map_frame}' not found in layout '{layout_name}'")
+
+    map_frame_name = map_frames[0]
+
+    # Check whether map series is checked
     map_series = layout.mapSeries
 
     if map_series and map_series.enabled:
+        current_page_number = map_series.currentPageNumber
+        try:
+            map_series.refresh()
+            map_series.currentPageNumber = current_page_number
+        except Exception as e:
+            arcpy.AddWarning(f"Map series refresh warning: {e}")
+
         arcpy.AddMessage(
-            f"Map series detected. Applying leaders to {map_series.pageCount} pages"
+            "Map series detected. Layout leader graphics do not honor page-based "
+            "visibility automatically, so leaders will be refreshed for the "
+            f"active page only (page {current_page_number})."
+        )
+        arcpy.AddMessage(
+            f"Map series camera after refresh: scale={map_frame_name.camera.scale}, "
+            f"heading={map_frame_name.camera.heading}"
         )
 
-        #  clear once before looping
+        # Layout graphic and text elements are shared by the entire layout, so
+        # generating one set per page causes them to stack on every page.
+        _clear_stationing_leaders(layout)
+
+        # Only build leaders for the page the user is currently viewing. This
+        # keeps the layout clean and prevents leaders from unrelated pages from
+        # being visible together.
         draw_stationing_leaders_for_points(
             layout=layout,
-            map_frame=target_map_frame,
-            point_event_features=[],
-            clear_existing=True,
+            map_frame=map_frame_name,
+            point_event_features=point_event_features,
+            page_id=current_page_number,
+            map_series=map_series,
+            clear_existing=False,
         )
 
-        for page_number in range(1, map_series.pageCount + 1):
-            map_series.currentPageNumber = page_number
+        # After creating the leaders, make sure only the active page's leaders
+        # remain visible in case older page-tagged elements already exist.
+        _set_stationing_leader_visibility(layout, active_page_id=current_page_number)
 
-            draw_stationing_leaders_for_points(
-                layout=layout,
-                map_frame=target_map_frame,
-                point_event_features=point_event_features,
-                page_id=page_number,
-                clear_existing=False,
-            )
-
-            arcpy.AddMessage(f"Finished page {page_number}")
-
+        arcpy.AddMessage(
+            "If you change the active map series page, run the leaders step again "
+            "to refresh the page-specific leader graphics."
+        )
     else:
         arcpy.AddMessage("No enabled map series found. Applying leaders once")
 
         draw_stationing_leaders_for_points(
             layout=layout,
-            map_frame=target_map_frame,
+            map_frame=map_frame_name,
             point_event_features=point_event_features,
             page_id=None,
             clear_existing=True,
         )
+        _set_stationing_leader_visibility(layout, active_page_id=None)
+
+
+# shift_pattern = [0, 0.5, -0.5, 1.0, -1.0, 1.5, -1.5]
+# min_spacing = 0.8
+
+# placed_labels = []
+# min_spacing = 1.0
+# shift_pattern = [0, 0.6, -0.6, 1.2, -1.2, 1.8, -1.8]
+
+# Keep leader vertical
+# leader_geom = arcpy.Polyline(
+#     arcpy.Array(
+#         [
+#             arcpy.Point(page_x, leader_start_y),
+#             arcpy.Point(page_x, leader_band_y),
+#         ]
+#     )
+# )
