@@ -37,7 +37,14 @@ from layout_tools_v3 import (
     generate_alignment_layout,
 )
 from leader_tools_v3 import draw_stationing_leaders_for_points, leaders_to_map_series
-from band_tools import build_band_records
+from band_tools import (
+    build_band_records,
+    get_route_measure_range,
+    build_layout_band_positions,
+    prepare_layout_band_records,
+    clear_point_band_labels,
+    draw_point_band_labels,
+)
 
 importlib.reload(route_tools_v3)
 importlib.reload(stationing_tools_v3)
@@ -872,6 +879,7 @@ class GenerateStationing(object):
         messages.addMessage("Chainage joined to station points.")
 
         event_feature_outputs = None
+        band_records = []
 
         if analysis_layers:
             messages.addMessage("Creating intersections and overlaps...")
@@ -898,6 +906,12 @@ class GenerateStationing(object):
                 "Point event tables: "
                 + str(event_outputs.get("point_event_tables", []))
             )
+            messages.addMessage(
+                f"Raw line overlaps: {crossing_outputs['line_overlaps']}"
+            )
+            messages.addMessage(
+                f"Line event tables: {event_outputs['line_event_tables']}"
+            )
 
             add_chainage_to_event_tables(
                 point_event_tables=event_outputs["point_event_tables"],
@@ -910,8 +924,13 @@ class GenerateStationing(object):
             )
 
             messages.addMessage("Band records created:")
-            for rec in band_records[:10]:
+            for rec in band_records:
                 messages.addMessage(str(rec))
+
+            messages.addMessage("LINE records only:")
+            for rec in band_records:
+                if rec["type"] == "LINE":
+                    messages.addMessage(str(rec))
 
             event_feature_outputs = make_event_layers_from_tables(
                 route_fc=outputs["route_fc"],
@@ -933,43 +952,101 @@ class GenerateStationing(object):
         add_output_to_current_map(outputs)
 
         layout_result = None
-        layout = None
 
         if create_layout:
             messages.addMessage("Generating layout...")
 
-            layout_result = generate_alignment_layout(
-                layout_name=layout_name,
-                layout_size=layout_size,
-                main_map_name=main_map_name,
-                mini_map_name=mini_map_name,
-                input_line_fc=input_line_fc,
-                output_gdb=output_gdb,
-                create_map_series=create_map_series,
-                map_series_scale=map_series_scale,
-                map_series_orientation=map_series_orientation,
-                map_series_overlap=map_series_overlap,
-            )
-
-            layout = layout_result["layout"]
-
-        # LEADERS
-        if (
-            create_layout
-            and event_feature_outputs
-            and event_feature_outputs.get("point_event_features")
-        ):
-
-            if create_map_series:
-                leaders_to_map_series(
+            try:
+                layout_result = generate_alignment_layout(
                     layout_name=layout_name,
-                    map_frame=layout_result["main_map_frame"].name,
-                    point_event_features=event_feature_outputs["point_event_features"],
+                    layout_size=layout_size,
+                    main_map_name=main_map_name,
+                    mini_map_name=mini_map_name,
+                    input_line_fc=input_line_fc,
+                    output_gdb=output_gdb,
+                    create_map_series=create_map_series,
+                    map_series_scale=map_series_scale,
+                    map_series_orientation=map_series_orientation,
+                    map_series_overlap=map_series_overlap,
                 )
-            else:
-                draw_stationing_leaders_for_points(
+                messages.addMessage(f"Layout created: {layout_result['layout_name']}")
+            except Exception as e:
+                messages.addErrorMessage(f"Layout generation failed: {e}")
+                raise
+
+        if create_layout and layout_result:
+            try:
+                route_fc = outputs["route_fc"]
+
+                messages.addMessage(f"route_fc before layout: {route_fc}")
+                messages.addMessage(f"type(route_fc): {type(route_fc)}")
+
+                if not arcpy.Exists(route_fc):
+                    raise ValueError(
+                        f"Invalid route_fc passed to layout logic: {route_fc}"
+                    )
+
+                messages.addMessage("Preparing layout band records...")
+                band_info = prepare_layout_band_records(
+                    route_fc=route_fc,
+                    band_records=band_records,
+                    band_left=1.0,
+                    band_width=10.0,
+                    point_row_y=7.5,
+                    line_row_y=7.1,
+                )
+
+                messages.addMessage(
+                    f"Route measure range: {band_info['route_start']} to {band_info['route_end']}"
+                )
+                messages.addMessage(
+                    f"Band records available for layout positioning: {len(band_info['row_ready_records'])}"
+                )
+
+                for line in band_info["debug_lines"]:
+                    messages.addMessage(line)
+
+                layout = layout_result["layout"]
+                point_records = [
+                    rec
+                    for rec in band_info["row_ready_records"]
+                    if rec["type"] == "POINT"
+                ]
+
+                deleted_count = clear_point_band_labels(layout)
+                messages.addMessage(f"Deleted {deleted_count} old point band labels.")
+
+                created_labels = draw_point_band_labels(
                     layout=layout,
-                    map_frame=layout_result["main_map_frame"],
-                    point_event_features=event_feature_outputs["point_event_features"],
-                    clear_existing=True,
+                    point_records=point_records,
+                    label_y=7.5,
+                    text_height=0.12,
+                    font_name="Tahoma",
                 )
+
+                messages.addMessage(
+                    f"Created {len(created_labels)} point band labels."
+                )
+
+                try:
+                    messages.addMessage("Opening layout view...")
+                    layout.openView()
+                except Exception as e:
+                    messages.addWarningMessage(
+                        f"Layout created, but the view could not be opened automatically: {e}"
+                    )
+
+            except Exception as e:
+                messages.addErrorMessage(f"Post-layout processing failed: {e}")
+                raise
+
+        # if create_layout and layout_result:
+        #     map_frame = layout_result["main_map_frame"]
+
+        #     page_start_meas, page_end_meas = get_route_measures_in_current_extent(
+        #         outputs["route_fc"],
+        #         map_frame,
+        #     )
+
+        #     messages.addMessage(f"Page start meas: {page_start_meas}")
+        #     messages.addMessage(f"Page end meas: {page_end_meas}")

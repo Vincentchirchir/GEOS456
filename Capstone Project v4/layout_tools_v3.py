@@ -36,9 +36,13 @@ def generate_alignment_layout(
     aprx = arcpy.mp.ArcGISProject("CURRENT")
 
     width, height = get_layout_dimensions(layout_size)
+    arcpy.AddMessage(f"Creating layout '{layout_name}' with size {layout_size}.")
 
     main_map = aprx.listMaps(main_map_name)[0]
     mini_map = aprx.listMaps(mini_map_name)[0]
+    arcpy.AddMessage(
+        f"Using main map '{main_map_name}' and mini map '{mini_map_name}'."
+    )
 
     layout = aprx.createLayout(width, height, "INCH", layout_name)
 
@@ -73,6 +77,7 @@ def generate_alignment_layout(
     map_series_info = None
 
     if create_map_series:
+        arcpy.AddMessage("Creating layout map series...")
         map_series_info = create_layout_map_series(
             input_line_fc=input_line_fc,
             output_gdb=output_gdb,
@@ -84,13 +89,14 @@ def generate_alignment_layout(
             overlap_percent=map_series_overlap,
         )
 
+    arcpy.AddMessage("Adding layout elements...")
     add_boundary_graphics(aprx, layout, width, height)
     add_north_arrow(aprx, layout, main_map_frame, width, height)
     add_scale_bar(aprx, layout, main_map_frame, width, height)
     add_map_scale_text(aprx, layout, main_map_frame, width, height)
     add_standard_texts(aprx, layout, width, height)
 
-    layout.openView()
+    arcpy.AddMessage(f"Layout '{layout.name}' generated successfully.")
 
     return {
         "layout": layout,

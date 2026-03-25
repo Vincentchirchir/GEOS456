@@ -19,6 +19,27 @@ def _ensure_leader_anchor_ids(point_fc):
             cursor.updateRow(row)
 
 
+def _explode_multipoint_intersections(point_fc):
+    # Intersect can return one multipoint feature for multiple crossings.
+    # LocateFeaturesAlongRoutes only stores one MEAS per input feature, so
+    # split the geometry before locating measures to keep entry/exit points unique.
+    desc = arcpy.Describe(point_fc)
+    if desc.shapeType != "Multipoint":
+        return point_fc
+
+    single_fc = rf"{point_fc}_singlepart"
+
+    if arcpy.Exists(single_fc):
+        arcpy.management.Delete(single_fc)
+
+    arcpy.management.MultipartToSinglepart(point_fc, single_fc)
+    arcpy.management.Delete(point_fc)
+    arcpy.management.CopyFeatures(single_fc, point_fc)
+    arcpy.management.Delete(single_fc)
+
+    return point_fc
+
+
 def _build_point_intersection_lookup(point_intersections, output_gdb):
     lookup = {}
 
@@ -94,6 +115,7 @@ def create_intersections_and_overlaps(
             # if count>0, keep output, if =0, delete the empty feature class
             # So that the gdb is not filled by empty feature
             if int(arcpy.management.GetCount(point_out)[0]) > 0:
+                point_out = _explode_multipoint_intersections(point_out)
                 _ensure_leader_anchor_ids(point_out)
                 point_intersections.append(point_out)
             else:
