@@ -42,6 +42,3 @@ bufferDist=arcpy.GetParameterAsText(2)
 
 #Call the buffer tool and use the variable as inputs
 arcpy.Buffer_analysis(inputFc, outputFC, bufferDist)
-
-def getParameterInfo(self):
-    inputFc=arcpy.Parameter

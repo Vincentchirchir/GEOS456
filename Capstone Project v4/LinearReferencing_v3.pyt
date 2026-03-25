@@ -44,6 +44,9 @@ from band_tools import (
     prepare_layout_band_records,
     clear_point_band_labels,
     draw_point_band_labels,
+    clear_line_band_labels,
+    draw_line_band_labels,
+    assign_point_label_sides,
 )
 
 importlib.reload(route_tools_v3)
@@ -1007,25 +1010,55 @@ class GenerateStationing(object):
                     messages.addMessage(line)
 
                 layout = layout_result["layout"]
+
+                row_ready_records = band_info["row_ready_records"]
+
                 point_records = [
-                    rec
-                    for rec in band_info["row_ready_records"]
-                    if rec["type"] == "POINT"
+                    rec for rec in row_ready_records if rec["type"] == "POINT"
                 ]
+                point_records = assign_point_label_sides(
+                    point_records,
+                    top_y=7.5,
+                    bottom_y=7.0,
+                )
+                line_records = [
+                    rec for rec in row_ready_records if rec["type"] == "LINE"
+                ]
+                line_records= assign_point_label_sides(
+                    line_records,
+                    top_y=7.5,
+                    bottom_y=7.5,
+                )
 
-                deleted_count = clear_point_band_labels(layout)
-                messages.addMessage(f"Deleted {deleted_count} old point band labels.")
+                deleted_points = clear_point_band_labels(layout)
+                deleted_lines = clear_line_band_labels(layout)
 
-                created_labels = draw_point_band_labels(
+                messages.addMessage(f"Deleted {deleted_points} old point band labels.")
+                messages.addMessage(f"Deleted {deleted_lines} old line band labels.")
+
+                created_point_labels = draw_point_band_labels(
                     layout=layout,
                     point_records=point_records,
                     label_y=7.5,
                     text_height=0.12,
                     font_name="Tahoma",
+                    label_mode="source_name",
+                )
+
+                created_line_labels = draw_line_band_labels(
+                    layout=layout,
+                    line_records=line_records,
+                    label_y=7.1,
+                    text_height=0.12,
+                    font_name="Tahoma",
+                    label_mode="source_name",
                 )
 
                 messages.addMessage(
-                    f"Created {len(created_labels)} point band labels."
+                    f"Created {len(created_point_labels)} point band labels."
+                )
+                messages.addMessage(
+                    f"Created {len(created_line_labels)} line band labels."
                 )
 
                 try:

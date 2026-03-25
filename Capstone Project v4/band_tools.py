@@ -14,6 +14,7 @@ def get_base_feature_name(path_or_name):
         "_event_single",
         "_event",
         "_single",
+        "_event_intersect",
     ]
 
     for suffix in suffixes:
@@ -53,13 +54,12 @@ def build_band_records(point_event_tables, line_event_tables):
             for fmeas, tmeas, chainage_range in cursor:
                 start = min(fmeas, tmeas)
                 end = max(fmeas, tmeas)
-
                 records.append(
                     {
                         "type": "LINE",
+                        "range": chainage_range,
                         "fmeas": start,
                         "tmeas": end,
-                        "range": chainage_range,
                         "source_table": source_table_name,
                         "source_name": source_name,
                     }
@@ -162,9 +162,9 @@ def get_route_measure_range(route_fc):
 
 
 def measure_to_layout_x(measure, route_start, route_end, band_left, band_width):
-    """
-    Converts a route measure into an x position on the layout band.
-    """
+
+    # Converts a route measure into an x position on the layout band.
+
     total_range = route_end - route_start
     if total_range == 0:
         raise ValueError("Route start and end measures are the same.")
@@ -266,6 +266,7 @@ def prepare_layout_band_records(
     Full preparation pipeline for layout band logic.
 
     Returns
+    -------
     dict with:
         route_start
         route_end
@@ -313,37 +314,8 @@ def draw_point_band_labels(
     prefix="BandPointLabel",
     label_mode="source_name",  # "source_name", "chainage", or "both"
 ):
-    """
-    Draw point labels in the layout using precomputed x positions.
 
-    Parameters
-    ----------
-    layout : arcpy.mp.Layout
-        The target layout.
-    point_records : list of dict
-        Records already prepared by band_tools. Each POINT record should have:
-            - type = "POINT"
-            - x
-            - chainage
-            - source_name (recommended)
-    label_y : float
-        Y position in layout page units (usually inches).
-    text_height : float
-        Text size in page units.
-    font_name : str
-        Font name for labels.
-    prefix : str
-        Prefix used in layout element names.
-    label_mode : str
-        "source_name" = draw only base feature name
-        "chainage"    = draw only chainage
-        "both"        = draw source name and chainage together
-
-    Returns
-    -------
-    list
-        Created text elements.
-    """
+    # Draw point labels in the layout using precomputed x positions.
 
     created_elements = []
     aprx = arcpy.mp.ArcGISProject("CURRENT")
@@ -356,6 +328,7 @@ def draw_point_band_labels(
             continue
 
         x = rec.get("x")
+        record_label_y = rec.get("label_y", label_y)
         source_name = rec.get("source_name", "")
         chainage = rec.get("chainage", "")
 
@@ -380,7 +353,7 @@ def draw_point_band_labels(
             .replace("-", "_")
         )
         element_name = f"{prefix}_{i}_{safe_text}"
-        point_geom = arcpy.Point(x, label_y)
+        point_geom = arcpy.Point(x, record_label_y)
 
         try:
             txt = aprx.createTextElement(
@@ -407,6 +380,81 @@ def draw_point_band_labels(
     return created_elements
 
 
+def draw_line_band_labels(
+    layout,
+    line_records,
+    label_y,
+    text_height=0.12,
+    font_name="Arial",
+    prefix="BandLineLabel",
+    label_mode="source_name",
+):
+    # here we are going to draw lines on layout using the midpoint of to and from measures
+    created_elements = []
+    aprx = arcpy.mp.ArcGISProject("CURRENT")
+    text_size_points = (
+        text_height * 72 if text_height and text_height < 1 else text_height
+    )
+
+    for i, rec in enumerate(line_records, start=1):
+        if rec.get("type") != "LINE":
+            continue
+
+        x1 = rec.get("x1")
+        x2 = rec.get("x2")
+        source_name = rec.get("source_name", "")
+        range_text = rec.get("range", "")
+
+        if label_mode == "source_name":
+            label_text = source_name
+        elif label_mode == "both":
+            if source_name and range_text:
+                label_text = f"{source_name} ({range_text})"
+            else:
+                label_text = source_name or range_text
+        else:
+            label_text = range_text
+
+        if x1 is None or x2 is None or not label_text:
+            continue
+
+        x_mid = (x1 + x2) / 2.0
+
+        safe_text = (
+            label_text.replace("+", "_")
+            .replace(" ", "_")
+            .replace("(", "")
+            .replace(")", "")
+            .replace("-", "_")
+        )
+        element_name = f"{prefix}_{i}_{safe_text}"
+        point_geom = arcpy.Point(x_mid, label_y)
+
+        try:
+            txt = aprx.createTextElement(
+                layout,
+                point_geom,
+                "POINT",
+                label_text,
+                text_size_points,
+            )
+            txt.name = element_name
+
+            cim = txt.getDefinition("V3")
+            cim.anchor = "CenterPoint"
+            cim.graphic.symbol.symbol.fontFamilyName = font_name
+            cim.graphic.symbol.symbol.height = text_size_points
+            txt.setDefinition(cim)
+
+        except Exception as e:
+            arcpy.AddWarning(f"Could not create band line label '{label_text}': {e}")
+            continue
+
+        created_elements.append(txt)
+
+    return created_elements
+
+
 def clear_point_band_labels(layout, prefix="BandPointLabel"):
     """
     Deletes previously created point band labels from the layout.
@@ -423,3 +471,49 @@ def clear_point_band_labels(layout, prefix="BandPointLabel"):
         elm.delete()
 
     return len(to_delete)
+
+
+def clear_line_band_labels(layout, prefix="BandLineLabel"):
+    """
+    Deletes previously created line band labels from the layout.
+    """
+    if not layout:
+        raise ValueError("Layout is required.")
+
+    to_delete = []
+    for elm in layout.listElements("TEXT_ELEMENT"):
+        if elm.name.startswith(prefix):
+            to_delete.append(elm)
+
+    for elm in to_delete:
+        elm.delete()
+
+    return len(to_delete)
+
+
+def assign_point_label_sides(
+    point_records,
+    top_y,
+    bottom_y,
+):
+    # Assign each point record a label side and y-position.
+
+    # For now:
+    # - alternate labels top/bottom
+    # - preserves x position already computed
+
+    updated = []
+
+    for i, rec in enumerate(point_records):
+        new_rec = rec.copy()
+
+        if i % 2 == 0:
+            new_rec["label_side"] = "TOP"
+            new_rec["label_y"] = top_y
+        else:
+            new_rec["label_side"] = "BOTTOM"
+            new_rec["label_y"] = bottom_y
+
+        updated.append(new_rec)
+
+    return updated
