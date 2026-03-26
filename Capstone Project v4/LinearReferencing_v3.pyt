@@ -36,17 +36,19 @@ from layout_tools_v3 import generate_alignment_layout
 from layout_tools_v3 import (
     generate_alignment_layout,
 )
-from leader_tools_v3 import draw_stationing_leaders_for_points, leaders_to_map_series
 from band_tools import (
     build_band_records,
     get_route_measure_range,
+    get_route_measures_in_current_extent,
     build_layout_band_positions,
     prepare_layout_band_records,
-    clear_point_band_labels,
-    draw_point_band_labels,
     clear_line_band_labels,
     draw_line_band_labels,
-    assign_point_label_sides,
+    assign_line_label_sides,
+    filter_point_records_for_labeling,
+    build_point_records_with_layout_xy,
+    draw_point_ticks_and_labels,
+    clear_point_ticks_and_labels,
 )
 
 importlib.reload(route_tools_v3)
@@ -55,218 +57,103 @@ importlib.reload(events_tools_v3)
 importlib.reload(map_tools_v3)
 importlib.reload(layout_tools_v3)
 importlib.reload(layout_elements_v3)
+importlib.reload(band_tools)
 
 
-def _iter_refresh_candidate_maps(aprx, primary_map):
-    # Refresh Leaders should prefer the map used by the layouts map frame, but
-    # fall back to the active map and other project maps because the outputs are
-    # currently added to aprx.activeMap during generation.
-    seen = set()
+# It now returns geometry for BOTH the top and bottom stationing bands.
+# These fractions must match the constants defined in layout_elements_v3.py
+# They are repeated here so the .pyt does not need to import them directly.
 
-    for map_obj in [primary_map, aprx.activeMap, *aprx.listMaps()]:
-        if not map_obj:
-            continue
+BAND_TOP_UPPER_FRAC    = 10.50 / 11.0   # top edge of upper stationing band
+BAND_BOTTOM_UPPER_FRAC =  9.50 / 11.0   # bottom edge of upper stationing band
 
-        map_id = getattr(map_obj, "URI", None) or getattr(map_obj, "name", None)
-        if map_id in seen:
-            continue
+BAND_TOP_LOWER_FRAC    =  2.67 / 11.0   # top edge of lower stationing band
+BAND_BOTTOM_LOWER_FRAC =  1.67 / 11.0   # bottom edge of lower stationing band
 
-        seen.add(map_id)
-        yield map_obj
+# Label row fractions within the BOTTOM band
+# Labels alternate between Bar 5 and Bar 6 row centres
+BOT_BAR5_CENTRE_FRAC = (2.28 + 2.08) / 2.0 / 11.0   # centre of Bar 5
+BOT_BAR6_CENTRE_FRAC = (1.85 + 1.67) / 2.0 / 11.0   # centre of Bar 6
 
-
-def _is_refresh_point_event_layer(lyr):
-    try:
-        if not lyr.isFeatureLayer or getattr(lyr, "isBroken", False):
-            return False
-
-        desc = arcpy.Describe(lyr)
-        if desc.shapeType not in ["Point", "Multipoint"]:
-            return False
-
-        data_source = getattr(lyr, "dataSource", None)
-        field_target = data_source if data_source else lyr
-        field_names = {field.name for field in arcpy.ListFields(field_target)}
-
-        data_source_name = (
-            os.path.splitext(os.path.basename(data_source))[0].lower()
-            if data_source
-            else ""
-        )
-        layer_name = getattr(lyr, "name", "").lower()
-        desc_name = getattr(desc, "basename", "").lower()
-        name_blob = " ".join(
-            part for part in [data_source_name, layer_name, desc_name] if part
-        )
-
-        # Accept any point layer that has Chainage
-        # Reject known non-event layers
-        if "station" in name_blob:
-            return False
-
-        # Must be point type
-        if desc.shapeType not in ["Point", "Multipoint"]:
-            return False
-
-        # Must have Chainage (still useful)
-        if "Chainage" not in field_names:
-            return False
-
-        # Must be intersection/event
-        if "intersect" in name_blob or "event" in name_blob:
-            return True
-
-        return False
-
-    except Exception:
-        return False
+# Label row fractions within the TOP band
+# Labels alternate between Bar 1 and Bar 3 row centres
+TOP_BAR1_CENTRE_FRAC = (10.30 + 10.10) / 2.0 / 11.0  # centre of Bar 1
+TOP_BAR3_CENTRE_FRAC = ( 9.68 +  9.50) / 2.0 / 11.0  # centre of Bar 3
 
 
-def _iter_layers(layers):
-    for lyr in layers:
-        yield lyr
-        if lyr.isGroupLayer:
-            for sublyr in _iter_layers(lyr.listLayers()):
-                yield sublyr
+def _get_stationing_band_geometry(layout, map_frame):
+    """
+    Returns geometry for both the top and bottom stationing bands.
 
+    All positions are derived from the page height so the layout
+    scales correctly if the page size changes.
 
-def _discover_refresh_point_event_features(aprx, primary_map):
-    discovered = []
-    seen_sources = set()
-    searched_maps = []
+    The top band sits above the map frame (9.50" to 10.50" on an 11" page).
+    The bottom band sits below the map frame (1.67" to 2.67" on an 11" page).
 
-    for map_obj in _iter_refresh_candidate_maps(aprx, primary_map):
-        searched_maps.append(map_obj.name)
+    Returns
+    -------
+    dict with keys:
+        band_left           -- left edge of both bands (matches map frame left)
+        band_width          -- width of both bands (matches map frame width)
 
-        try:
-            layers = map_obj.listLayers()
-        except Exception:
-            continue
+        -- TOP BAND --
+        top_band_top        -- top edge of top band in inches
+        top_band_bottom     -- bottom edge of top band = top of map frame
+        top_label_bar1_y    -- label y for odd records (Bar 1 centre)
+        top_label_bar3_y    -- label y for even records (Bar 3 centre)
 
-        for lyr in _iter_layers(layers):
-            try:
-                arcpy.AddMessage(f"Checking layer: {lyr.name}")
+        -- BOTTOM BAND --
+        bot_band_top        -- top edge of bottom band = bottom of map frame
+        bot_band_bottom     -- bottom edge of bottom band in inches
+        bot_label_bar5_y    -- label y for odd records (Bar 5 centre)
+        bot_label_bar6_y    -- label y for even records (Bar 6 centre)
+    """
+    page_height = layout.pageHeight  # full page height in inches
 
-                if not lyr.isFeatureLayer:
-                    arcpy.AddMessage("  - skipped: not a feature layer")
-                    continue
+    # Band left and width follow the map frame so ticks align with the map
+    band_left  = map_frame.elementPositionX
+    band_width = map_frame.elementWidth
 
-                desc = arcpy.Describe(lyr)
-                arcpy.AddMessage(f"  - shapeType: {desc.shapeType}")
+    # Top band positions 
+    top_band_top    = page_height * BAND_TOP_UPPER_FRAC     # 10.50"
+    top_band_bottom = page_height * BAND_BOTTOM_UPPER_FRAC  #  9.50"
 
-                data_source = getattr(lyr, "dataSource", None)
-                arcpy.AddMessage(f"  - data source: {data_source}")
+    # Labels sit at the centre of Bar 1 (top row) and Bar 3 (bottom row)
+    top_label_bar1_y = page_height * TOP_BAR1_CENTRE_FRAC   # ~10.20"
+    top_label_bar3_y = page_height * TOP_BAR3_CENTRE_FRAC   # ~ 9.59"
 
-                field_target = data_source if data_source else lyr
-                field_names = [field.name for field in arcpy.ListFields(field_target)]
-                arcpy.AddMessage(f"  - fields: {field_names}")
+    # Bottom band positions
+    bot_band_top    = page_height * BAND_TOP_LOWER_FRAC     # 2.67"
+    bot_band_bottom = page_height * BAND_BOTTOM_LOWER_FRAC  # 1.67"
 
-                if not _is_refresh_point_event_layer(lyr):
-                    arcpy.AddMessage("  - skipped by _is_refresh_point_event_layer")
-                    continue
+    # Labels sit at the centre of Bar 5 and Bar 6
+    bot_label_bar5_y = page_height * BOT_BAR5_CENTRE_FRAC  # ~2.18"
+    bot_label_bar6_y = page_height * BOT_BAR6_CENTRE_FRAC  # ~1.76"
 
-                if not data_source or data_source in seen_sources:
-                    arcpy.AddMessage("  - skipped: no data source or already seen")
-                    continue
+    return {
+        "band_left":         band_left,
+        "band_width":        band_width,
 
-                seen_sources.add(data_source)
-                discovered.append(data_source)
-                arcpy.AddMessage("  - accepted")
+        # Top band
+        "top_band_top":      top_band_top,
+        "top_band_bottom":   top_band_bottom,   # = top of map frame
+        "top_label_bar1_y":  top_label_bar1_y,
+        "top_label_bar3_y":  top_label_bar3_y,
 
-            except Exception as e:
-                arcpy.AddMessage(f"  - error reading layer: {e}")
-                continue
-
-    return discovered, searched_maps
+        # Bottom band
+        "bot_band_top":      bot_band_top,       # = bottom of map frame
+        "bot_band_bottom":   bot_band_bottom,
+        "bot_label_bar5_y":  bot_label_bar5_y,
+        "bot_label_bar6_y":  bot_label_bar6_y,
+    }
 
 
 class Toolbox(object):
     def __init__(self):
         self.label = "Stationing and Linear Referencing Tools"
         self.alias = "stationingtools"
-        self.tools = [GenerateStationing, RefreshLeaders]
-
-
-class RefreshLeaders(object):
-    def __init__(self):
-        self.label = "Refresh Leaders"
-        self.description = "Refresh leader graphics for the current map series page"
-        self.canRunInBackground = False
-
-    def getParameterInfo(self):
-        return []
-
-    def isLicensed(self):
-        return True
-
-    def execute(self, parameters, messages):
-        import arcpy
-        from leader_tools_v3 import leaders_to_map_series
-
-        aprx = arcpy.mp.ArcGISProject("CURRENT")
-
-        # Find layout with enabled map series
-        target_layout = None
-        for lyt in aprx.listLayouts():
-            try:
-                if lyt.mapSeries and lyt.mapSeries.enabled:
-                    target_layout = lyt
-                    break
-            except:
-                continue
-
-        if not target_layout:
-            arcpy.AddError("No layout with an enabled map series found.")
-            return
-
-        # Find the correct map frame dynamically
-        map_frames = target_layout.listElements("MAPFRAME_ELEMENT")
-        if not map_frames:
-            arcpy.AddError("No map frames found in the layout.")
-            return
-
-        # First try to find one whose name suggests it is the main map
-        preferred_frames = [mf for mf in map_frames if "main" in mf.name.lower()]
-
-        if preferred_frames:
-            map_frame = preferred_frames[0]
-        else:
-            # Fallback: use the largest map frame, not the mini map
-            map_frame = max(
-                map_frames, key=lambda mf: mf.elementWidth * mf.elementHeight
-            )
-
-        arcpy.AddMessage(f"Using map frame: {map_frame.name}")
-
-        map_obj = map_frame.map
-        map_series = target_layout.mapSeries
-
-        current_page = map_series.currentPageNumber
-        arcpy.AddMessage(f"Refreshing leaders for page {current_page}")
-
-        # Search the layout map first, then fall back to the active map and any
-        # other project maps. This makes refresh robust even when generation
-        # added outputs to a different map than the layout currently references.
-        unique_point_event_features, searched_maps = (
-            _discover_refresh_point_event_features(aprx, map_obj)
-        )
-
-        if not unique_point_event_features:
-            arcpy.AddError(
-                "No point event layers found. Maps searched: "
-                + ", ".join(searched_maps)
-            )
-            return
-
-        arcpy.AddMessage("Detected point event layers:")
-        for fc in unique_point_event_features:
-            arcpy.AddMessage(f" - {fc}")
-
-        leaders_to_map_series(
-            layout_name=target_layout.name,
-            map_frame=map_frame.name,
-            point_event_features=unique_point_event_features,
-        )
+        self.tools = [GenerateStationing]
 
 
 class GenerateStationing(object):
@@ -951,7 +838,8 @@ class GenerateStationing(object):
         else:
             messages.addMessage("No intersecting or overlapping features provided.")
 
-        add_output_to_current_map(event_feature_outputs)
+        if event_feature_outputs:
+            add_output_to_current_map(event_feature_outputs)
         add_output_to_current_map(outputs)
 
         layout_result = None
@@ -978,102 +866,133 @@ class GenerateStationing(object):
                 raise
 
         if create_layout and layout_result:
-            try:
-                route_fc = outputs["route_fc"]
+            route_fc = outputs["route_fc"]
 
-                messages.addMessage(f"route_fc before layout: {route_fc}")
-                messages.addMessage(f"type(route_fc): {type(route_fc)}")
+            messages.addMessage(f"route_fc before layout: {route_fc}")
+            messages.addMessage(f"type(route_fc): {type(route_fc)}")
 
-                if not arcpy.Exists(route_fc):
-                    raise ValueError(
-                        f"Invalid route_fc passed to layout logic: {route_fc}"
-                    )
+            if not arcpy.Exists(route_fc):
+                raise ValueError(f"Invalid route_fc passed to layout logic: {route_fc}")
 
-                messages.addMessage("Preparing layout band records...")
-                band_info = prepare_layout_band_records(
-                    route_fc=route_fc,
-                    band_records=band_records,
-                    band_left=1.0,
-                    band_width=10.0,
-                    point_row_y=7.5,
-                    line_row_y=7.1,
+            messages.addMessage("Preparing layout band records...")
+
+            layout = layout_result["layout"]
+            map_frame = layout_result["main_map_frame"]
+            route_fc = outputs["route_fc"]
+
+            # Build geometry for both stationing bands from the actual layout
+            band_geom = _get_stationing_band_geometry(layout, map_frame)
+
+            band_left  = band_geom["band_left"]
+            band_width = band_geom["band_width"]
+
+            messages.addMessage(
+                f"Band geometry -> left={band_left:.4f}, width={band_width:.4f}"
+            )
+            messages.addMessage(
+                f"Top band    -> bottom={band_geom['top_band_bottom']:.4f}, "
+                f"top={band_geom['top_band_top']:.4f}"
+            )
+            messages.addMessage(
+                f"Bottom band -> bottom={band_geom['bot_band_bottom']:.4f}, "
+                f"top={band_geom['bot_band_top']:.4f}"
+            )
+
+            # Get the full route measure range for the current page
+            route_start, route_end = get_route_measure_range(route_fc)
+            messages.addMessage(f"Using measure range: {route_start} to {route_end}")
+
+            # Line overlap labels — drawn in the top band only
+            band_info = prepare_layout_band_records(
+                band_records=band_records,
+                band_left=band_left,
+                band_width=band_width,
+                point_row_y=band_geom["top_label_bar1_y"],
+                line_row_y=band_geom["top_label_bar1_y"],
+                route_start=route_start,
+                route_end=route_end,
+            )
+
+            row_ready_records = band_info["row_ready_records"]
+
+            # Separate point and line records
+            point_records = [r for r in row_ready_records if r["type"] == "POINT"]
+            line_records  = [r for r in row_ready_records if r["type"] == "LINE"]
+
+            # Remove point labels already covered by line overlap labels
+            point_records = filter_point_records_for_labeling(
+                point_records, line_records
+            )
+
+            # Assign alternating rows to line overlap labels (top band only)
+            line_records = assign_line_label_sides(
+                line_records,
+                top_y=band_geom["top_label_bar1_y"],
+                bottom_y=band_geom["top_label_bar3_y"],
+            )
+
+            # Clear and redraw line overlap labels
+            deleted_lines = clear_line_band_labels(layout)
+            messages.addMessage(f"Deleted {deleted_lines} old line band labels.")
+
+            created_line_labels = draw_line_band_labels(
+                layout=layout,
+                line_records=line_records,
+                label_y=band_geom["top_label_bar1_y"],
+                text_height=0.12,
+                font_name="Tahoma",
+                label_mode="source_name",
+            )
+            messages.addMessage(
+                f"Created {len(created_line_labels)} line band labels."
+            )
+
+            # ── Point ticks and labels — drawn across BOTH bands ──────────────
+            # Odd records  → tick at TOP band bottom edge, label in top band
+            # Even records → tick at BOTTOM band top edge, label in bottom band
+            if event_feature_outputs and event_feature_outputs.get("point_event_features"):
+
+                # Clear any old ticks and labels before redrawing
+                clear_point_ticks_and_labels(layout)
+
+                # Build records with real map layout coordinates for each point
+                point_records_with_xy = build_point_records_with_layout_xy(
+                    point_event_features=event_feature_outputs["point_event_features"],
+                    map_frame=map_frame,
+                    route_start=route_start,
+                    route_end=route_end,
+                    band_left=band_left,
+                    band_width=band_width,
                 )
 
-                messages.addMessage(
-                    f"Route measure range: {band_info['route_start']} to {band_info['route_end']}"
-                )
-                messages.addMessage(
-                    f"Band records available for layout positioning: {len(band_info['row_ready_records'])}"
-                )
-
-                for line in band_info["debug_lines"]:
-                    messages.addMessage(line)
-
-                layout = layout_result["layout"]
-
-                row_ready_records = band_info["row_ready_records"]
-
-                point_records = [
-                    rec for rec in row_ready_records if rec["type"] == "POINT"
-                ]
-                point_records = assign_point_label_sides(
-                    point_records,
-                    top_y=7.5,
-                    bottom_y=7.0,
-                )
-                line_records = [
-                    rec for rec in row_ready_records if rec["type"] == "LINE"
-                ]
-                line_records= assign_point_label_sides(
-                    line_records,
-                    top_y=7.5,
-                    bottom_y=7.5,
-                )
-
-                deleted_points = clear_point_band_labels(layout)
-                deleted_lines = clear_line_band_labels(layout)
-
-                messages.addMessage(f"Deleted {deleted_points} old point band labels.")
-                messages.addMessage(f"Deleted {deleted_lines} old line band labels.")
-
-                created_point_labels = draw_point_band_labels(
+                # Draw ticks and labels alternating between top and bottom bands
+                ticks = draw_point_ticks_and_labels(
                     layout=layout,
-                    point_records=point_records,
-                    label_y=7.5,
-                    text_height=0.12,
+                    point_records=point_records_with_xy,
+
+                    # Odd records tick at the bottom edge of the top band
+                    band_y_top=band_geom["top_band_bottom"],
+
+                    # Even records tick at the top edge of the bottom band
+                    band_y_bottom=band_geom["bot_band_top"],
+
+                    # Label y positions inside each band
+                    label_top_y=band_geom["top_label_bar1_y"],
+                    label_bottom_y=band_geom["bot_label_bar5_y"],
+
+                    half_tick=0.1,
+                    text_height=0.17,
                     font_name="Tahoma",
-                    label_mode="source_name",
                 )
 
-                created_line_labels = draw_line_band_labels(
-                    layout=layout,
-                    line_records=line_records,
-                    label_y=7.1,
-                    text_height=0.12,
-                    font_name="Tahoma",
-                    label_mode="source_name",
-                )
+                messages.addMessage(f"Created {len(ticks)} tick marks.")
 
+            else:
+                # No analysis layers were provided — nothing to tick
                 messages.addMessage(
-                    f"Created {len(created_point_labels)} point band labels."
+                    "No analysis layers provided — skipping tick drawing."
                 )
-                messages.addMessage(
-                    f"Created {len(created_line_labels)} line band labels."
-                )
-
-                try:
-                    messages.addMessage("Opening layout view...")
-                    layout.openView()
-                except Exception as e:
-                    messages.addWarningMessage(
-                        f"Layout created, but the view could not be opened automatically: {e}"
-                    )
-
-            except Exception as e:
-                messages.addErrorMessage(f"Post-layout processing failed: {e}")
-                raise
-
-        # if create_layout and layout_result:
+            # if create_layout and layout_result:
         #     map_frame = layout_result["main_map_frame"]
 
         #     page_start_meas, page_end_meas = get_route_measures_in_current_extent(

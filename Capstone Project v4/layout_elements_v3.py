@@ -2,7 +2,74 @@ import arcpy
 import time
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# PAGE LAYOUT STRUCTURE  (Tabloid 17 x 11 inches)
+#
+#  11.00"  ┬ top of page
+#  10.50"  ├ top of TOP stationing band        (band_top_upper)
+#   9.50"  ├ bottom of TOP stationing band     (band_bottom_upper)
+#           │   = top of main map frame
+#   2.67"  ├ bottom of main map frame
+#           │   = top of BOTTOM stationing band (band_top_lower)
+#   1.67"  ├ bottom of BOTTOM stationing band  (band_bottom_lower)
+#   0.00"  ┴ bottom of page
+#           │   Legend, Mini Map, Project Info, Tables occupy 0 – 1.67"
+#
+# Both bands are 1 inch tall.
+# Top band holds Bars 1-3.
+# Bottom band holds Bars 4-6.  Labels alternate between Bar 5 and Bar 6 rows.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Page proportions — all positions expressed as fractions of page dimensions
+# so the layout scales correctly across different page sizes.
+
+# Top stationing band occupies the top 1" of the page
+# On an 11" page:  10.50" / 11" = 0.9545,  9.50" / 11" = 0.8636
+BAND_TOP_UPPER_FRAC = 10.50 / 11.0  # top edge of upper stationing band
+BAND_BOTTOM_UPPER_FRAC = 9.50 / 11.0  # bottom edge of upper stationing band
+
+# Main map frame sits between the two bands
+# Top of map = bottom of upper band = 9.50" / 11" = 0.8636
+# Bottom of map = top of lower band = 2.67" / 11" = 0.2427
+MAP_TOP_FRAC = BAND_BOTTOM_UPPER_FRAC  # 9.50" / 11"
+MAP_BOTTOM_FRAC = 2.67 / 11.0  # 2.67" / 11"
+
+# Bottom stationing band occupies 1" just above the bottom elements
+# On an 11" page:  2.67" / 11" = 0.2427,  1.67" / 11" = 0.1518
+BAND_TOP_LOWER_FRAC = MAP_BOTTOM_FRAC  # 2.67" / 11"
+BAND_BOTTOM_LOWER_FRAC = 1.67 / 11.0  # 1.67" / 11"
+
+# Bottom elements (Legend, Tables, Project Info) occupy 0 to 1.67"
+BOTTOM_ELEMENTS_TOP_FRAC = BAND_BOTTOM_LOWER_FRAC  # 1.67" / 11"
+
+# ── Bar row fractions within the TOP band (9.50" to 10.50") ──────────────────
+# Each bar is roughly 0.2" tall with a small gap between bars.
+# Positions expressed as fractions of page height.
+TOP_BAR1_TOP_FRAC = 10.30 / 11.0
+TOP_BAR1_BOTTOM_FRAC = 10.10 / 11.0
+
+TOP_BAR2_TOP_FRAC = 9.90 / 11.0
+TOP_BAR2_BOTTOM_FRAC = 9.70 / 11.0
+
+TOP_BAR3_TOP_FRAC = 9.68 / 11.0
+TOP_BAR3_BOTTOM_FRAC = 9.50 / 11.0
+
+# ── Bar row fractions within the BOTTOM band (1.67" to 2.67") ────────────────
+BOT_BAR4_TOP_FRAC = 2.50 / 11.0
+BOT_BAR4_BOTTOM_FRAC = 2.30 / 11.0
+
+BOT_BAR5_TOP_FRAC = 2.28 / 11.0
+BOT_BAR5_BOTTOM_FRAC = 2.08 / 11.0
+
+BOT_BAR6_TOP_FRAC = 1.85 / 11.0
+BOT_BAR6_BOTTOM_FRAC = 1.67 / 11.0
+
+
 def add_north_arrow(project, layout, map_frame, width, height):
+    """
+    Adds a north arrow to the layout at a proportional position.
+    Position is scaled to the page size so it works on any paper format.
+    """
     north_arrow_location = arcpy.Point(
         width * 0.9247818181818180,
         height * 0.0404588235294118,
@@ -24,6 +91,10 @@ def add_north_arrow(project, layout, map_frame, width, height):
 
 
 def add_scale_bar(project, layout, map_frame, width, height):
+    """
+    Adds a metric alternating scale bar to the layout.
+    Size and label font are scaled to the page dimensions.
+    """
     scale_bar_location = arcpy.Point(
         width * 0.9204636363636360,
         height * 0.0534470588235294,
@@ -55,6 +126,10 @@ def add_scale_bar(project, layout, map_frame, width, height):
 
 
 def add_map_scale_text(project, layout, map_frame, width, height):
+    """
+    Adds a dynamic map scale text element below the scale bar.
+    Uses a dynamic tag so the scale updates automatically with the map frame.
+    """
     map_scale_location = arcpy.Point(
         width * 0.9489818181818180,
         height * 0.03927058823529414,
@@ -79,6 +154,16 @@ def add_map_scale_text(project, layout, map_frame, width, height):
 
 
 def add_standard_texts(project, layout, width, height):
+    """
+    Adds all standard text labels to the layout — titles, page numbers,
+    project info labels, and section headings.
+
+    Locked elements cannot be accidentally moved in the layout view.
+    Unlocked elements (Date, Pages) are left editable by the user.
+
+    NOTE: The Stationing label now reads 'Stationing' for both bands —
+    it sits on the left margin beside the top stationing band as before.
+    """
     locked_texts = []
     unlocked_texts = []
 
@@ -86,7 +171,8 @@ def add_standard_texts(project, layout, width, height):
         {
             "text": "Legend",
             "text_x": width * 0.0100636363636364,
-            "text_y": height * 0.0809058823529412,
+            # Adjusted y — bottom elements now end at BOTTOM_ELEMENTS_TOP_FRAC
+            "text_y": height * (BOTTOM_ELEMENTS_TOP_FRAC * 0.41),
             "rotation": 90,
             "name": "Legend Text",
             "font_size": 6,
@@ -97,7 +183,8 @@ def add_standard_texts(project, layout, width, height):
         {
             "text": "Plan View",
             "text_x": width * 0.0100636363636364,
-            "text_y": height * 0.4750941176470590,
+            # Centre of the map frame vertically
+            "text_y": height * ((MAP_TOP_FRAC + MAP_BOTTOM_FRAC) / 2),
             "rotation": 90,
             "name": "Plan View",
             "font_size": 6,
@@ -108,9 +195,22 @@ def add_standard_texts(project, layout, width, height):
         {
             "text": "Stationing",
             "text_x": width * 0.0100636363636364,
-            "text_y": height * 0.8750235294117650,
+            # Centre of the top stationing band
+            "text_y": height * ((BAND_TOP_UPPER_FRAC + BAND_BOTTOM_UPPER_FRAC) / 2),
             "rotation": 90,
-            "name": "Stationing",
+            "name": "Stationing Top",
+            "font_size": 6,
+            "underline": False,
+            "font_style": "Bold",
+            "locked": True,
+        },
+        {
+            "text": "Stationing",
+            "text_x": width * 0.0100636363636364,
+            # Centre of the bottom stationing band
+            "text_y": height * ((BAND_TOP_LOWER_FRAC + BAND_BOTTOM_LOWER_FRAC) / 2),
+            "rotation": 90,
+            "name": "Stationing Bottom",
             "font_size": 6,
             "underline": False,
             "font_style": "Bold",
@@ -242,7 +342,7 @@ def add_standard_texts(project, layout, width, height):
         else:
             unlocked_texts.append(text_element)
 
-    # Lock elements individually instead of grouping
+    # Lock and unlock elements individually
     for text_element in locked_texts:
         try:
             text_element.locked = True
@@ -257,9 +357,22 @@ def add_standard_texts(project, layout, width, height):
 
 
 def add_boundary_graphics(project, layout, width, height):
+    """
+    Draws all boundary box polygons on the layout.
+
+    Structure after update:
+        - Top stationing band  : 9.50" to 10.50"  (3 bars)
+        - Plan View            : 2.67" to 9.50"
+        - Bottom stationing band: 1.67" to 2.67"  (3 bars, labels between bars 5 and 6)
+        - Bottom elements      : 0" to 1.67"  (Legend, Tables, Project Info — unchanged)
+
+    All x positions are unchanged — only y positions for the stationing
+    and plan view borders have been adjusted.
+    """
     grouping_polygons = []
 
     boundaries = [
+        # ── Bottom element boxes — UNCHANGED ────────────────────────────────
         {
             "polygon_name": "Intersection Table",
             "x_min_poly": width * 0.60580000000000000,
@@ -285,22 +398,6 @@ def add_boundary_graphics(project, layout, width, height):
             "outline": 0.5,
         },
         {
-            "polygon_name": "Plan View Border",
-            "x_min_poly": 0,
-            "y_min_poly": height * 0.197647058823529,
-            "x_max_poly": width,
-            "y_max_poly": height * 0.801176470588235,
-            "outline": 0.5,
-        },
-        {
-            "polygon_name": "Stationing Border",
-            "x_min_poly": width * 0.01176363636363640,
-            "y_min_poly": height * 0.80117647058823500,
-            "x_max_poly": width,
-            "y_max_poly": height,
-            "outline": 0.5,
-        },
-        {
             "polygon_name": "Mini Map Border",
             "x_min_poly": width * 0.32545454545454500,
             "y_min_poly": 0,
@@ -314,54 +411,6 @@ def add_boundary_graphics(project, layout, width, height):
             "y_min_poly": 0,
             "x_max_poly": width,
             "y_max_poly": height * 0.19764705882352900,
-            "outline": 0.5,
-        },
-        {
-            "polygon_name": "Stationing Bar 1",
-            "x_min_poly": width * 0.01176363636363640,
-            "y_min_poly": height * 0.9796117647058820,
-            "x_max_poly": width,
-            "y_max_poly": height,
-            "outline": 0.25,
-        },
-        {
-            "polygon_name": "Stationing Bar 2",
-            "x_min_poly": width * 0.01176363636363640,
-            "y_min_poly": height * 0.9398470588235290,
-            "x_max_poly": width,
-            "y_max_poly": height * 0.9597294117647060,
-            "outline": 0.25,
-        },
-        {
-            "polygon_name": "Stationing Bar 3",
-            "x_min_poly": width * 0.01176363636363640,
-            "y_min_poly": height * 0.9000823529411760,
-            "x_max_poly": width,
-            "y_max_poly": height * 0.9199647058823530,
-            "outline": 0.25,
-        },
-        {
-            "polygon_name": "Stationing Bar 4",
-            "x_min_poly": width * 0.01176363636363640,
-            "y_min_poly": height * 0.8603176470588240,
-            "x_max_poly": width,
-            "y_max_poly": height * 0.8802000000000000,
-            "outline": 0.25,
-        },
-        {
-            "polygon_name": "Stationing Bar 5",
-            "x_min_poly": width * 0.01176363636363640,
-            "y_min_poly": height * 0.82055294117647100,
-            "x_max_poly": width,
-            "y_max_poly": height * 0.84043529411764700,
-            "outline": 0.25,
-        },
-        {
-            "polygon_name": "Stationing Bar Border",
-            "x_min_poly": width * 0.01176363636363640,
-            "y_min_poly": height * 0.80117647058823500,
-            "x_max_poly": width,
-            "y_max_poly": height,
             "outline": 0.5,
         },
         {
@@ -444,6 +493,85 @@ def add_boundary_graphics(project, layout, width, height):
             "y_max_poly": height * 0.0230470588235294,
             "outline": 0.5,
         },
+        # ── Plan View border — y adjusted to sit between the two bands ───────
+        {
+            "polygon_name": "Plan View Border",
+            "x_min_poly": 0,
+            # Bottom of plan view = top of bottom stationing band
+            "y_min_poly": height * BAND_TOP_LOWER_FRAC,
+            "x_max_poly": width,
+            # Top of plan view = bottom of top stationing band
+            "y_max_poly": height * BAND_BOTTOM_UPPER_FRAC,
+            "outline": 0.5,
+        },
+        # ── TOP stationing band border ────────────────────────────────────────
+        {
+            "polygon_name": "Top Stationing Border",
+            "x_min_poly": width * 0.01176363636363640,
+            "y_min_poly": height * BAND_BOTTOM_UPPER_FRAC,  # 9.50" / 11"
+            "x_max_poly": width,
+            "y_max_poly": height * BAND_TOP_UPPER_FRAC,  # 10.50" / 11"
+            "outline": 0.5,
+        },
+        # ── TOP band — 3 bar rows ─────────────────────────────────────────────
+        {
+            "polygon_name": "Top Stationing Bar 1",
+            "x_min_poly": width * 0.01176363636363640,
+            "y_min_poly": height * TOP_BAR1_BOTTOM_FRAC,
+            "x_max_poly": width,
+            "y_max_poly": height * TOP_BAR1_TOP_FRAC,
+            "outline": 0.25,
+        },
+        {
+            "polygon_name": "Top Stationing Bar 2",
+            "x_min_poly": width * 0.01176363636363640,
+            "y_min_poly": height * TOP_BAR2_BOTTOM_FRAC,
+            "x_max_poly": width,
+            "y_max_poly": height * TOP_BAR2_TOP_FRAC,
+            "outline": 0.25,
+        },
+        {
+            "polygon_name": "Top Stationing Bar 3",
+            "x_min_poly": width * 0.01176363636363640,
+            "y_min_poly": height * TOP_BAR3_BOTTOM_FRAC,
+            "x_max_poly": width,
+            "y_max_poly": height * TOP_BAR3_TOP_FRAC,
+            "outline": 0.25,
+        },
+        # ── BOTTOM stationing band border ─────────────────────────────────────
+        {
+            "polygon_name": "Bottom Stationing Border",
+            "x_min_poly": width * 0.01176363636363640,
+            "y_min_poly": height * BAND_BOTTOM_LOWER_FRAC,  # 1.67" / 11"
+            "x_max_poly": width,
+            "y_max_poly": height * BAND_TOP_LOWER_FRAC,  # 2.67" / 11"
+            "outline": 0.5,
+        },
+        # ── BOTTOM band — 3 bar rows ──────────────────────────────────────────
+        {
+            "polygon_name": "Bottom Stationing Bar 4",
+            "x_min_poly": width * 0.01176363636363640,
+            "y_min_poly": height * BOT_BAR4_BOTTOM_FRAC,
+            "x_max_poly": width,
+            "y_max_poly": height * BOT_BAR4_TOP_FRAC,
+            "outline": 0.25,
+        },
+        {
+            "polygon_name": "Bottom Stationing Bar 5",
+            "x_min_poly": width * 0.01176363636363640,
+            "y_min_poly": height * BOT_BAR5_BOTTOM_FRAC,
+            "x_max_poly": width,
+            "y_max_poly": height * BOT_BAR5_TOP_FRAC,
+            "outline": 0.25,
+        },
+        {
+            "polygon_name": "Bottom Stationing Bar 6",
+            "x_min_poly": width * 0.01176363636363640,
+            "y_min_poly": height * BOT_BAR6_BOTTOM_FRAC,
+            "x_max_poly": width,
+            "y_max_poly": height * BOT_BAR6_TOP_FRAC,
+            "outline": 0.25,
+        },
     ]
 
     for boundary in boundaries:
@@ -463,12 +591,15 @@ def add_boundary_graphics(project, layout, width, height):
             layout, poly_extent, poly_style, name=boundary["polygon_name"]
         )
 
+        # Apply the outline weight defined per boundary
         poly_cim = poly.getDefinition("V3")
         poly_cim.graphic.symbol.symbol.symbolLayers[0].width = boundary["outline"]
         poly.setDefinition(poly_cim)
 
         grouping_polygons.append(poly)
 
+    # Group all boundary polygons and lock them so they cannot be
+    # accidentally moved or deleted in the layout view
     if grouping_polygons:
         group_polygons = project.createGroupElement(
             layout, grouping_polygons, "DO NOT TOUCH (Boundaries)"
