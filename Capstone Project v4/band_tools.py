@@ -949,3 +949,48 @@ def clear_point_ticks_and_labels(layout, prefix="PointTick"):
             removed += 1
 
     return removed  # return count so the caller can log how many were removed
+
+
+# #Update the constants at the top of layout_elements_v3.py:
+# # Top stationing band — pushed down slightly to give labels room
+# BAND_TOP_UPPER_FRAC    = 10.50 / 11.0
+# BAND_BOTTOM_UPPER_FRAC =  9.30 / 11.0   # was 9.50 — extra 0.2" for label breathing room
+
+# # Main map frame
+# MAP_TOP_FRAC    = BAND_BOTTOM_UPPER_FRAC
+# MAP_BOTTOM_FRAC = 3.20 / 11.0           # was 2.67 — pushed up to clear bottom elements
+
+# # Bottom stationing band — raised to avoid overlapping Legend/Tables
+# BAND_TOP_LOWER_FRAC    = MAP_BOTTOM_FRAC  # 3.20"
+# BAND_BOTTOM_LOWER_FRAC = 2.20 / 11.0     # was 1.67 — now sits above bottom elements
+
+# # ── Top band bar rows (within 9.30" to 10.50") ──
+# TOP_BAR1_TOP_FRAC    = 10.35 / 11.0
+# TOP_BAR1_BOTTOM_FRAC = 10.15 / 11.0
+
+# TOP_BAR2_TOP_FRAC    = 10.00 / 11.0
+# TOP_BAR2_BOTTOM_FRAC =  9.80 / 11.0
+
+# TOP_BAR3_TOP_FRAC    =  9.60 / 11.0
+# TOP_BAR3_BOTTOM_FRAC =  9.40 / 11.0
+
+# # ── Bottom band bar rows (within 2.20" to 3.20") ──
+# BOT_BAR4_TOP_FRAC    = 3.10 / 11.0
+# BOT_BAR4_BOTTOM_FRAC = 2.90 / 11.0
+
+# BOT_BAR5_TOP_FRAC    = 2.80 / 11.0      # labels sit BETWEEN Bar 5 and Bar 6
+# BOT_BAR5_BOTTOM_FRAC = 2.60 / 11.0      # gap below Bar 5 = 0.30" for labels
+
+# BOT_BAR6_TOP_FRAC    = 2.30 / 11.0
+# BOT_BAR6_BOTTOM_FRAC = 2.20 / 11.0
+
+# And update the label centre fractions in _get_stationing_band_geometry to sit in the gaps between bars, not inside the bar boxes:
+# python# Top band — label sits in the gap between Bar 2 and Bar 3
+# # Gap runs from 9.60" (Bar 3 top) to 9.80" (Bar 2 bottom) — centre is 9.70"
+# TOP_BAR1_CENTRE_FRAC = (10.35 + 10.15) / 2.0 / 11.0  # inside Bar 1 — top label row
+# TOP_BAR3_CENTRE_FRAC =  9.70 / 11.0                   # GAP between Bar 2 and Bar 3
+
+# # Bottom band — labels sit in the gap between Bar 5 and Bar 6
+# # Gap runs from 2.30" (Bar 6 top) to 2.60" (Bar 5 bottom) — centre is 2.45"
+# BOT_BAR5_CENTRE_FRAC = 2.45 / 11.0   # GAP between Bar 5 and Bar 6 — odd labels
+# BOT_BAR6_CENTRE_FRAC = 2.45 / 11.0   # same gap — even labels also go here
