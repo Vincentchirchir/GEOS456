@@ -327,7 +327,7 @@ def auto_populate_layout(
 
     # Intersection Summary
     # Groups records by source_name and counts intersections and overlaps.
-    # Layout has 4 summary row boxes.
+    # Layout has 8 summary row boxes.
     try:
         summary = {}  # { source_name: {"intersections": n, "overlaps": n} }
 

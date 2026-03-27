@@ -872,7 +872,7 @@ def draw_point_ticks_and_labels(
         # Alternate between top band and bottom band
         # Odd index  → top band tick + label
         # Even index → bottom band tick + label
-        # --- Alternate between top band and bottom band ----------------------
+        # Alternate between top band and bottom band
         # Odd index  (1, 3, 5...) → top band tick + label
         # Even index (2, 4, 6...) → bottom band tick + label
         if i % 2 == 1:
