@@ -10,6 +10,9 @@ import map_tools_v3
 import layout_elements_v3
 import layout_tools_v3  # layout_tools
 import band_tools
+import auto_populate
+import map_series_tools_v3
+
 
 tool_folder = os.path.dirname(__file__)
 if tool_folder not in sys.path:
@@ -33,9 +36,7 @@ from events_tools_v3 import (
 )
 from map_tools_v3 import add_output_to_current_map
 from layout_tools_v3 import generate_alignment_layout
-from layout_tools_v3 import (
-    generate_alignment_layout,
-)
+
 from band_tools import (
     build_band_records,
     get_route_measure_range,
@@ -50,6 +51,8 @@ from band_tools import (
     draw_point_ticks_and_labels,
     clear_point_ticks_and_labels,
 )
+from auto_populate import auto_populate_layout
+from map_series_tools_v3 import update_map_series_pages, create_layout_map_series
 
 importlib.reload(route_tools_v3)
 importlib.reload(stationing_tools_v3)
@@ -58,27 +61,27 @@ importlib.reload(map_tools_v3)
 importlib.reload(layout_tools_v3)
 importlib.reload(layout_elements_v3)
 importlib.reload(band_tools)
+importlib.reload(auto_populate)
+importlib.reload(map_series_tools_v3)
 
 
-# It now returns geometry for BOTH the top and bottom stationing bands.
-# These fractions must match the constants defined in layout_elements_v3.py
-# They are repeated here so the .pyt does not need to import them directly.
+# Import band-position constants from layout_elements_v3 AFTER the reload so
+# any in-session changes to that module are reflected here without restarting.
+# Single source of truth — do NOT redefine these here.
+from layout_elements_v3 import (
+    BAND_TOP_UPPER_FRAC,
+    BAND_BOTTOM_UPPER_FRAC,
+    BAND_TOP_LOWER_FRAC,
+    BAND_BOTTOM_LOWER_FRAC,
+    TOP_BAR1_FRAC,
+    TOP_BAR2_FRAC,
+    TOP_BAR3_FRAC,
+)
 
-BAND_TOP_UPPER_FRAC    = 10.50 / 11.0   # top edge of upper stationing band
-BAND_BOTTOM_UPPER_FRAC =  9.50 / 11.0   # bottom edge of upper stationing band
-
-BAND_TOP_LOWER_FRAC    =  2.67 / 11.0   # top edge of lower stationing band
-BAND_BOTTOM_LOWER_FRAC =  1.67 / 11.0   # bottom edge of lower stationing band
-
-# Label row fractions within the BOTTOM band
+# Label row fractions within the BOTTOM band — not defined in layout_elements_v3.py
 # Labels alternate between Bar 5 and Bar 6 row centres
-BOT_BAR5_CENTRE_FRAC = (2.28 + 2.08) / 2.0 / 11.0   # centre of Bar 5
-BOT_BAR6_CENTRE_FRAC = (1.85 + 1.67) / 2.0 / 11.0   # centre of Bar 6
-
-# Label row fractions within the TOP band
-# Labels alternate between Bar 1 and Bar 3 row centres
-TOP_BAR1_CENTRE_FRAC = (10.30 + 10.10) / 2.0 / 11.0  # centre of Bar 1
-TOP_BAR3_CENTRE_FRAC = ( 9.68 +  9.50) / 2.0 / 11.0  # centre of Bar 3
+BOT_BAR5_CENTRE_FRAC = (2.28 + 2.08) / 2.0 / 11.0  # centre of Bar 5
+BOT_BAR6_CENTRE_FRAC = (1.85 + 1.67) / 2.0 / 11.0  # centre of Bar 6
 
 
 def _get_stationing_band_geometry(layout, map_frame):
@@ -89,7 +92,7 @@ def _get_stationing_band_geometry(layout, map_frame):
     scales correctly if the page size changes.
 
     The top band sits above the map frame (9.50" to 10.50" on an 11" page).
-    The bottom band sits below the map frame (1.67" to 2.67" on an 11" page).
+    The bottom band sits below the map frame (2.17" to 3.17" on an 11" page).
 
     Returns
     -------
@@ -111,41 +114,48 @@ def _get_stationing_band_geometry(layout, map_frame):
     """
     page_height = layout.pageHeight  # full page height in inches
 
+    # Three label rows cycling through the top band gaps
+
     # Band left and width follow the map frame so ticks align with the map
-    band_left  = map_frame.elementPositionX
+    band_left = map_frame.elementPositionX
     band_width = map_frame.elementWidth
 
-    # Top band positions 
-    top_band_top    = page_height * BAND_TOP_UPPER_FRAC     # 10.50"
+    # Top band positions
+    top_band_top = page_height * BAND_TOP_UPPER_FRAC  # 10.50"
     top_band_bottom = page_height * BAND_BOTTOM_UPPER_FRAC  #  9.50"
 
-    # Labels sit at the centre of Bar 1 (top row) and Bar 3 (bottom row)
-    top_label_bar1_y = page_height * TOP_BAR1_CENTRE_FRAC   # ~10.20"
-    top_label_bar3_y = page_height * TOP_BAR3_CENTRE_FRAC   # ~ 9.59"
+    # Three label rows — each sits in the centre of a gap between bar lines
+    # Row 1: gap between top border and Bar 1
+    top_label_row1_y = page_height * ((BAND_TOP_UPPER_FRAC + TOP_BAR1_FRAC) / 2)
+
+    # Row 2: gap between Bar 1 and Bar 2
+    top_label_row2_y = page_height * ((TOP_BAR1_FRAC + TOP_BAR2_FRAC) / 2)
+
+    # Row 3: gap between Bar 2 and Bar 3
+    top_label_row3_y = page_height * ((TOP_BAR2_FRAC + TOP_BAR3_FRAC) / 2)
 
     # Bottom band positions
-    bot_band_top    = page_height * BAND_TOP_LOWER_FRAC     # 2.67"
+    bot_band_top = page_height * BAND_TOP_LOWER_FRAC  # 2.67"
     bot_band_bottom = page_height * BAND_BOTTOM_LOWER_FRAC  # 1.67"
 
     # Labels sit at the centre of Bar 5 and Bar 6
-    bot_label_bar5_y = page_height * BOT_BAR5_CENTRE_FRAC  # ~2.18"
+    bot_label_bar5_y = page_height * (2.8 / 11.0)  # ~2.18"
     bot_label_bar6_y = page_height * BOT_BAR6_CENTRE_FRAC  # ~1.76"
 
     return {
-        "band_left":         band_left,
-        "band_width":        band_width,
-
+        "band_left": band_left,
+        "band_width": band_width,
         # Top band
-        "top_band_top":      top_band_top,
-        "top_band_bottom":   top_band_bottom,   # = top of map frame
-        "top_label_bar1_y":  top_label_bar1_y,
-        "top_label_bar3_y":  top_label_bar3_y,
-
+        "top_band_top": top_band_top,
+        "top_band_bottom": top_band_bottom,  # = top of map frame
+        "top_label_row1_y": top_label_row1_y,
+        "top_label_row2_y": top_label_row2_y,
+        "top_label_row3_y": top_label_row3_y,
         # Bottom band
-        "bot_band_top":      bot_band_top,       # = bottom of map frame
-        "bot_band_bottom":   bot_band_bottom,
-        "bot_label_bar5_y":  bot_label_bar5_y,
-        "bot_label_bar6_y":  bot_label_bar6_y,
+        "bot_band_top": bot_band_top,  # = bottom of map frame
+        "bot_band_bottom": bot_band_bottom,
+        "bot_label_bar5_y": bot_label_bar5_y,
+        "bot_label_bar6_y": bot_label_bar6_y,
     }
 
 
@@ -883,7 +893,7 @@ class GenerateStationing(object):
             # Build geometry for both stationing bands from the actual layout
             band_geom = _get_stationing_band_geometry(layout, map_frame)
 
-            band_left  = band_geom["band_left"]
+            band_left = band_geom["band_left"]
             band_width = band_geom["band_width"]
 
             messages.addMessage(
@@ -907,8 +917,8 @@ class GenerateStationing(object):
                 band_records=band_records,
                 band_left=band_left,
                 band_width=band_width,
-                point_row_y=band_geom["top_label_bar1_y"],
-                line_row_y=band_geom["top_label_bar1_y"],
+                point_row_y=band_geom["top_label_row1_y"],
+                line_row_y=band_geom["top_label_row1_y"],
                 route_start=route_start,
                 route_end=route_end,
             )
@@ -917,7 +927,7 @@ class GenerateStationing(object):
 
             # Separate point and line records
             point_records = [r for r in row_ready_records if r["type"] == "POINT"]
-            line_records  = [r for r in row_ready_records if r["type"] == "LINE"]
+            line_records = [r for r in row_ready_records if r["type"] == "LINE"]
 
             # Remove point labels already covered by line overlap labels
             point_records = filter_point_records_for_labeling(
@@ -927,8 +937,8 @@ class GenerateStationing(object):
             # Assign alternating rows to line overlap labels (top band only)
             line_records = assign_line_label_sides(
                 line_records,
-                top_y=band_geom["top_label_bar1_y"],
-                bottom_y=band_geom["top_label_bar3_y"],
+                top_y=band_geom["top_label_row1_y"],
+                bottom_y=band_geom["top_label_row3_y"],
             )
 
             # Clear and redraw line overlap labels
@@ -938,19 +948,19 @@ class GenerateStationing(object):
             created_line_labels = draw_line_band_labels(
                 layout=layout,
                 line_records=line_records,
-                label_y=band_geom["top_label_bar1_y"],
+                label_y=band_geom["top_label_row1_y"],
                 text_height=0.12,
                 font_name="Tahoma",
                 label_mode="source_name",
             )
-            messages.addMessage(
-                f"Created {len(created_line_labels)} line band labels."
-            )
+            messages.addMessage(f"Created {len(created_line_labels)} line band labels.")
 
-            # ── Point ticks and labels — drawn across BOTH bands ──────────────
+            # Point ticks and labels — drawn across BOTH bands
             # Odd records  → tick at TOP band bottom edge, label in top band
             # Even records → tick at BOTTOM band top edge, label in bottom band
-            if event_feature_outputs and event_feature_outputs.get("point_event_features"):
+            if event_feature_outputs and event_feature_outputs.get(
+                "point_event_features"
+            ):
 
                 # Clear any old ticks and labels before redrawing
                 clear_point_ticks_and_labels(layout)
@@ -969,17 +979,15 @@ class GenerateStationing(object):
                 ticks = draw_point_ticks_and_labels(
                     layout=layout,
                     point_records=point_records_with_xy,
-
                     # Odd records tick at the bottom edge of the top band
                     band_y_top=band_geom["top_band_bottom"],
-
                     # Even records tick at the top edge of the bottom band
                     band_y_bottom=band_geom["bot_band_top"],
-
                     # Label y positions inside each band
-                    label_top_y=band_geom["top_label_bar1_y"],
+                    label_top_row1_y=band_geom["top_label_row1_y"],
+                    label_top_row2_y=band_geom["top_label_row2_y"],
+                    label_top_row3_y=band_geom["top_label_row3_y"],
                     label_bottom_y=band_geom["bot_label_bar5_y"],
-
                     half_tick=0.1,
                     text_height=0.17,
                     font_name="Tahoma",
@@ -992,6 +1000,48 @@ class GenerateStationing(object):
                 messages.addMessage(
                     "No analysis layers provided — skipping tick drawing."
                 )
+
+            # Auto-populate all derivable text elements on the layout
+            auto_populate_layout(
+                layout=layout,
+                project=arcpy.mp.ArcGISProject("CURRENT"),
+                width=layout_result["width"],
+                height=layout_result["height"],
+                input_line_fc=input_line_fc,
+                route_fc=route_fc,
+                route_start=route_start,
+                route_end=route_end,
+                band_records=band_records,
+            )
+
+            # Update map series pages if map series was created
+            if create_map_series and layout_result.get("map_series_info"):
+                map_series_info = layout_result["map_series_info"]
+
+                update_map_series_pages(
+                    layout=layout,
+                    map_frame=map_frame,
+                    map_series=map_series_info["map_series"],
+                    index_fc=map_series_info["index_fc"],
+                    route_fc=route_fc,
+                    band_records=band_records,
+                    point_event_features=(
+                        event_feature_outputs["point_event_features"]
+                        if event_feature_outputs
+                        else []
+                    ),
+                    band_geom=band_geom,
+                    route_start=route_start,
+                    route_end=route_end,
+                )
+                messages.addMessage("Map series pages updated.")
+
+            # try:
+            #     layout.openView()
+            # except Exception as e:
+            #     messages.addWarningMessage(
+            #         f"Layout created but could not open automatically: {e}"
+            # )
             # if create_layout and layout_result:
         #     map_frame = layout_result["main_map_frame"]
 
