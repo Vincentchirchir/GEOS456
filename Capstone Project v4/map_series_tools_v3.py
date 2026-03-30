@@ -183,6 +183,7 @@ def update_map_series_pages(
     project,
     width,
     height,
+    scale=None,
     export_pdf=False,
     pdf_output_folder=None,
     layout_name="Layout",
@@ -259,6 +260,14 @@ def update_map_series_pages(
             arcpy.AddMessage(f"  Page {page_num} rotation: {angle:.2f} degrees")
         except Exception as e:
             arcpy.AddWarning(f"  Could not apply rotation for page {page_num}: {e}")
+
+        # Step 2b: Lock camera to the user-specified scale
+        if scale is not None:
+            try:
+                map_frame.camera.scale = int(scale)
+                arcpy.AddMessage(f"  Page {page_num} scale locked to: {int(scale)}")
+            except Exception as e:
+                arcpy.AddWarning(f"  Could not set scale for page {page_num}: {e}")
 
         # Step 3: Get measure range from index page extent
         # Uses the index polygon extent — includes full overlap zone
