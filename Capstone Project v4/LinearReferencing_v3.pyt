@@ -53,6 +53,7 @@ from band_tools import (
 )
 from auto_populate import auto_populate_layout
 from map_series_tools_v3 import update_map_series_pages, create_layout_map_series
+from band_tools import build_line_records_with_layout_xy
 
 importlib.reload(route_tools_v3)
 importlib.reload(stationing_tools_v3)
@@ -76,12 +77,12 @@ from layout_elements_v3 import (
     TOP_BAR1_FRAC,
     TOP_BAR2_FRAC,
     TOP_BAR3_FRAC,
+    TOP_BAR4_FRAC,
+    BOT_BAR4_FRAC,
+    BOT_BAR5_FRAC,
+    BOT_BAR6_FRAC,
+    BOT_BAR7_FRAC,
 )
-
-# Label row fractions within the BOTTOM band — not defined in layout_elements_v3.py
-# Labels alternate between Bar 5 and Bar 6 row centres
-BOT_BAR5_CENTRE_FRAC = (2.28 + 2.08) / 2.0 / 11.0  # centre of Bar 5
-BOT_BAR6_CENTRE_FRAC = (1.85 + 1.67) / 2.0 / 11.0  # centre of Bar 6
 
 
 def _get_stationing_band_geometry(layout, map_frame):
@@ -122,9 +123,12 @@ def _get_stationing_band_geometry(layout, map_frame):
 
     # Top band positions
     top_band_top = page_height * BAND_TOP_UPPER_FRAC  # 10.50"
-    top_band_bottom = page_height * BAND_BOTTOM_UPPER_FRAC  #  9.50"
+    # top_band_bottom = page_height * BAND_BOTTOM_UPPER_FRAC  #  9.50"
+    top_band_bottom = (
+        map_frame.elementPositionY + map_frame.elementHeight
+    )  # top edge of frame
 
-    # Three label rows — each sits in the centre of a gap between bar lines
+    # Four label rows — each sits in the centre of a gap between bar lines
     # Row 1: gap between top border and Bar 1
     top_label_row1_y = page_height * ((BAND_TOP_UPPER_FRAC + TOP_BAR1_FRAC) / 2)
 
@@ -134,13 +138,25 @@ def _get_stationing_band_geometry(layout, map_frame):
     # Row 3: gap between Bar 2 and Bar 3
     top_label_row3_y = page_height * ((TOP_BAR2_FRAC + TOP_BAR3_FRAC) / 2)
 
-    # Bottom band positions
-    bot_band_top = page_height * BAND_TOP_LOWER_FRAC  # 2.67"
-    bot_band_bottom = page_height * BAND_BOTTOM_LOWER_FRAC  # 1.67"
+    # Row 4: gap between Bar 3 and Bar 4
+    top_label_row4_y = page_height * ((TOP_BAR3_FRAC + TOP_BAR4_FRAC) / 2)
 
-    # Labels sit at the centre of Bar 5 and Bar 6
-    bot_label_bar5_y = page_height * (2.8 / 11.0)  # ~2.18"
-    bot_label_bar6_y = page_height * BOT_BAR6_CENTRE_FRAC  # ~1.76"
+    # Bottom band positions
+    bot_band_top = map_frame.elementPositionY  # bottom edge of frame
+    bot_band_bottom = page_height * BAND_BOTTOM_LOWER_FRAC
+
+    # Four label rows for the bottom band
+    # Row 1: gap between band top border and Bot Bar 4
+    bot_label_row1_y = page_height * ((BAND_TOP_LOWER_FRAC + BOT_BAR4_FRAC) / 2)
+
+    # Row 2: gap between Bot Bar 4 and Bot Bar 5
+    bot_label_row2_y = page_height * ((BOT_BAR4_FRAC + BOT_BAR5_FRAC) / 2)
+
+    # Row 3: gap between Bot Bar 5 and Bot Bar 6
+    bot_label_row3_y = page_height * ((BOT_BAR5_FRAC + BOT_BAR6_FRAC) / 2)
+
+    # Row 4: gap between Bot Bar 6 and Bot Bar 7
+    bot_label_row4_y = page_height * ((BOT_BAR6_FRAC + BOT_BAR7_FRAC) / 2)
 
     return {
         "band_left": band_left,
@@ -151,11 +167,14 @@ def _get_stationing_band_geometry(layout, map_frame):
         "top_label_row1_y": top_label_row1_y,
         "top_label_row2_y": top_label_row2_y,
         "top_label_row3_y": top_label_row3_y,
+        "top_label_row4_y": top_label_row4_y,
         # Bottom band
         "bot_band_top": bot_band_top,  # = bottom of map frame
         "bot_band_bottom": bot_band_bottom,
-        "bot_label_bar5_y": bot_label_bar5_y,
-        "bot_label_bar6_y": bot_label_bar6_y,
+        "bot_label_row1_y": bot_label_row1_y,
+        "bot_label_row2_y": bot_label_row2_y,
+        "bot_label_row3_y": bot_label_row3_y,
+        "bot_label_row4_y": bot_label_row4_y,
     }
 
 
@@ -344,6 +363,23 @@ class GenerateStationing(object):
         )
         map_series_overlap.value = 15
 
+        export_pdf = arcpy.Parameter(
+            displayName="Export Map Series to PDF",
+            name="export_pdf",
+            datatype="GPBoolean",
+            parameterType="Optional",
+            direction="Input",
+        )
+        export_pdf.value = False
+
+        pdf_output_folder = arcpy.Parameter(
+            displayName="PDF Output Folder",
+            name="pdf_output_folder",
+            datatype="DEFolder",
+            parameterType="Optional",
+            direction="Input",
+        )
+
         try:
             aprx = arcpy.mp.ArcGISProject("CURRENT")
             active_map = aprx.activeMap
@@ -423,6 +459,8 @@ class GenerateStationing(object):
             map_series_scale,  # 13
             map_series_orientation,  # 14
             map_series_overlap,  # 15
+            export_pdf,           # 16 
+            pdf_output_folder,    # 17 
         ]
 
     def updateParameters(self, parameters):
@@ -457,6 +495,19 @@ class GenerateStationing(object):
         else:
             for i in map_series_param_indexes:
                 parameters[i].enabled = False
+
+        # Enable export PDF only when both layout and map series are checked
+        if create_layout.value and create_map_series.value:
+            parameters[16].enabled = True  # export_pdf
+        else:
+            parameters[16].enabled = False
+            parameters[17].enabled = False
+
+        # Enable PDF folder only when export PDF is checked
+        if create_layout.value and create_map_series.value and parameters[16].value:
+            parameters[17].enabled = True
+        else:
+            parameters[17].enabled = False
 
         # Auto-fill layout name from input line
         input_line = parameters[0]
@@ -848,6 +899,9 @@ class GenerateStationing(object):
         else:
             messages.addMessage("No intersecting or overlapping features provided.")
 
+        export_pdf        = bool(parameters[16].value)
+        pdf_output_folder = parameters[17].valueAsText
+
         if event_feature_outputs:
             add_output_to_current_map(event_feature_outputs)
         add_output_to_current_map(outputs)
@@ -941,20 +995,6 @@ class GenerateStationing(object):
                 bottom_y=band_geom["top_label_row3_y"],
             )
 
-            # Clear and redraw line overlap labels
-            deleted_lines = clear_line_band_labels(layout)
-            messages.addMessage(f"Deleted {deleted_lines} old line band labels.")
-
-            created_line_labels = draw_line_band_labels(
-                layout=layout,
-                line_records=line_records,
-                label_y=band_geom["top_label_row1_y"],
-                text_height=0.12,
-                font_name="Tahoma",
-                label_mode="source_name",
-            )
-            messages.addMessage(f"Created {len(created_line_labels)} line band labels.")
-
             # Point ticks and labels — drawn across BOTH bands
             # Odd records  → tick at TOP band bottom edge, label in top band
             # Even records → tick at BOTTOM band top edge, label in bottom band
@@ -966,6 +1006,8 @@ class GenerateStationing(object):
                 clear_point_ticks_and_labels(layout)
 
                 # Build records with real map layout coordinates for each point
+
+                # Build point records
                 point_records_with_xy = build_point_records_with_layout_xy(
                     point_event_features=event_feature_outputs["point_event_features"],
                     map_frame=map_frame,
@@ -975,19 +1017,54 @@ class GenerateStationing(object):
                     band_width=band_width,
                 )
 
-                # Draw ticks and labels alternating between top and bottom bands
+                # Build line records
+                line_records_with_xy = build_line_records_with_layout_xy(
+                    line_event_features=event_feature_outputs["line_event_features"],
+                    map_frame=map_frame,
+                    route_start=route_start,
+                    route_end=route_end,
+                    band_left=band_left,
+                    band_width=band_width,
+                )
+
+                # Get source names that have overlap records
+                line_source_names = {r.get("source_name") for r in line_records_with_xy}
+
+                # Log what will be filtered so you can verify
+                arcpy.AddMessage(
+                    f"Line source names (will filter from points): {line_source_names}"
+                )
+
+                # Remove POINT records whose source also appears as a LINE overlap
+                # — the overlap entry/exit ticks already cover those crossings
+                point_records_with_xy = [
+                    r
+                    for r in point_records_with_xy
+                    if r.get("source_name") not in line_source_names
+                ]
+
+                arcpy.AddMessage(
+                    f"Point records after filter: {len(point_records_with_xy)}"
+                )
+                arcpy.AddMessage(f"Line records: {len(line_records_with_xy)}")
+
+                # Combine — points to top band, lines to bottom band
+                all_records_with_xy = point_records_with_xy + line_records_with_xy
+
+                # Draw ticks and labels
                 ticks = draw_point_ticks_and_labels(
                     layout=layout,
-                    point_records=point_records_with_xy,
-                    # Odd records tick at the bottom edge of the top band
+                    point_records=all_records_with_xy,
                     band_y_top=band_geom["top_band_bottom"],
-                    # Even records tick at the top edge of the bottom band
                     band_y_bottom=band_geom["bot_band_top"],
-                    # Label y positions inside each band
                     label_top_row1_y=band_geom["top_label_row1_y"],
                     label_top_row2_y=band_geom["top_label_row2_y"],
                     label_top_row3_y=band_geom["top_label_row3_y"],
-                    label_bottom_y=band_geom["bot_label_bar5_y"],
+                    label_top_row4_y=band_geom["top_label_row4_y"],
+                    label_bottom_row1_y=band_geom["bot_label_row1_y"],
+                    label_bottom_row2_y=band_geom["bot_label_row2_y"],
+                    label_bottom_row3_y=band_geom["bot_label_row3_y"],
+                    label_bottom_row4_y=band_geom["bot_label_row4_y"],
                     half_tick=0.1,
                     text_height=0.17,
                     font_name="Tahoma",
@@ -1014,7 +1091,6 @@ class GenerateStationing(object):
                 band_records=band_records,
             )
 
-            # Update map series pages if map series was created
             if create_map_series and layout_result.get("map_series_info"):
                 map_series_info = layout_result["map_series_info"]
 
@@ -1025,14 +1101,18 @@ class GenerateStationing(object):
                     index_fc=map_series_info["index_fc"],
                     route_fc=route_fc,
                     band_records=band_records,
-                    point_event_features=(
-                        event_feature_outputs["point_event_features"]
-                        if event_feature_outputs
-                        else []
-                    ),
+                    point_event_features=event_feature_outputs["point_event_features"] if event_feature_outputs else [],
+                    line_event_features=event_feature_outputs["line_event_features"] if event_feature_outputs else [],   
                     band_geom=band_geom,
                     route_start=route_start,
                     route_end=route_end,
+                    input_line_fc=input_line_fc,          
+                    project=arcpy.mp.ArcGISProject("CURRENT"),  
+                    width=layout_result["width"],          
+                    height=layout_result["height"],  
+                    export_pdf=export_pdf,                
+                    pdf_output_folder=pdf_output_folder,  
+                    layout_name=layout_name,                
                 )
                 messages.addMessage("Map series pages updated.")
 

@@ -18,6 +18,7 @@ def get_base_feature_name(path_or_name):
         "_intersect_event_single",
         "_intersect_event_intersect",
         "_intersect_event",
+        "_overlap_event_overlap",
         "_overlap_event",
         "_intersect",
         "_overlap",
@@ -46,7 +47,7 @@ def build_band_records(point_event_tables, line_event_tables):
     Line records contain:  type, range, fmeas, tmeas, source_table, source_name
 
     Parameters
-    ----------
+    
     point_event_tables : list of str
         Paths to point event tables (each has MEAS and Chainage fields).
     line_event_tables : list of str
@@ -789,139 +790,298 @@ def wrap_label_text(text, max_chars=12):
 
     return "\n".join(lines)
 
+def build_line_records_with_layout_xy(
+    line_event_features,
+    map_frame,
+    route_start,
+    route_end,
+    band_left,
+    band_width,
+):
+    """
+    Reads each line (overlap) feature's entry and exit geometry, converts
+    both to layout page coordinates, and builds a record dict ready for
+    tick and label drawing.
+
+    Entry point  = firstPoint of the line geometry = FMEAS location
+    Exit point   = lastPoint  of the line geometry = TMEAS location
+    Label x      = midpoint between entry and exit layout x positions
+
+    Parameters
+    ----------
+    line_event_features : list of str
+        Paths to line event feature classes (from make_event_layers_from_tables).
+    map_frame : arcpy.mp.MapFrame
+    route_start, route_end : float
+        Page or full route measure range.
+    band_left, band_width : float
+        Band geometry in layout page units.
+
+    Returns
+    -------
+    list of dict, each containing:
+        type            -- always "LINE"
+        fmeas, tmeas    -- route measure values
+        range           -- chainage range string e.g. "1+728 - 1+770"
+        source_name     -- feature class base name
+        x               -- band x from fmeas (proportional position on band)
+        x1_map_layout   -- layout page x of entry point
+        x2_map_layout   -- layout page x of exit point
+        x_mid_layout    -- midpoint layout x — where label sits
+    """
+    records      = []
+    total_range  = route_end - route_start
+
+    for fc in line_event_features:
+        source_name = get_base_feature_name(fc)
+
+        # Read line geometry plus measure and chainage fields
+        fields = ["SHAPE@", "FMEAS", "TMEAS", "ChainageRange"]
+
+        # Only read fields that actually exist on this feature class
+        available = {f.name for f in arcpy.ListFields(fc)}
+        read_fields = [f for f in fields if f in available or f == "SHAPE@"]
+
+        with arcpy.da.SearchCursor(fc, read_fields) as cursor:
+            for row in cursor:
+                geom          = row[0]
+                fmeas         = row[1] if len(row) > 1 else None
+                tmeas         = row[2] if len(row) > 2 else None
+                chainage_range = row[3] if len(row) > 3 else ""
+
+                if geom is None or fmeas is None or tmeas is None:
+                    continue
+
+                # Entry point — firstPoint of line = FMEAS location on route
+                entry_pt = geom.firstPoint
+                exit_pt  = geom.lastPoint
+
+                if entry_pt is None or exit_pt is None:
+                    continue
+
+                # Convert entry and exit map coordinates to layout page coords
+                x1_layout, _ = _map_point_to_layout_xy(
+                    entry_pt.X, entry_pt.Y, map_frame
+                )
+                x2_layout, _ = _map_point_to_layout_xy(
+                    exit_pt.X, exit_pt.Y, map_frame
+                )
+
+                # Ensure x1 is always the left (smaller) value
+                x1_layout, x2_layout = min(x1_layout, x2_layout), max(x1_layout, x2_layout)
+
+                # Label sits at the midpoint between entry and exit
+                x_mid = (x1_layout + x2_layout) / 2.0
+
+                # Band x from fmeas for proportional band position
+                ratio  = (fmeas - route_start) / total_range
+                x_band = band_left + ratio * band_width
+
+                records.append({
+                    "type":           "LINE",
+                    "fmeas":          fmeas,
+                    "tmeas":          tmeas,
+                    "range":          chainage_range or "",
+                    "source_name":    source_name,
+                    "x":              x_band,        # band position from measure
+                    "x1_map_layout":  x1_layout,     # layout x of entry tick
+                    "x2_map_layout":  x2_layout,     # layout x of exit tick
+                    "x_mid_layout":   x_mid,         # label sits here
+                    "x_map_layout":   x_mid,         # kept for compatibility
+                })
+
+    return records
 
 def draw_point_ticks_and_labels(
     layout,
     point_records,
-    band_y_top,  # y of the bottom edge of the TOP stationing band
-    band_y_bottom,  # y of the top edge of the BOTTOM stationing band
-    label_bottom_y,  # y where labels sit inside the bottom band
-    label_top_row1_y,  # gap above Bar 1
-    label_top_row2_y,  # gap between Bar 1 and Bar 2
-    label_top_row3_y,  # gap between Bar 2 and Bar 3
+    band_y_top,
+    band_y_bottom,
+    label_top_row1_y,
+    label_top_row2_y,
+    label_top_row3_y,
+    label_top_row4_y,
+    label_bottom_row1_y,
+    label_bottom_row2_y,
+    label_bottom_row3_y,
+    label_bottom_row4_y,
     half_tick=0.1,
     text_height=0.17,
     font_name="Arial",
     prefix="PointTick",
-    max_label_chars=12,
+    max_label_chars=30,
 ):
     """
-    Draws a vertical tick and label for each point record on the layout.
+    Draws a vertical tick and label for each record on the layout.
 
-    Records alternate between the top and bottom stationing bands:
-        Odd  index (1, 3, 5...) → tick at top band bottom edge,
-                                   label inside top band at label_top_y
-        Even index (2, 4, 6...) → tick at bottom band top edge,
-                                   label inside bottom band at label_bottom_y
+    Routing logic based on record TYPE not index:
+        POINT (intersection) → tick at top band edge
+                               label cycles through 4 top rows
+        LINE  (overlap)      → tick at bottom band edge
+                               label cycles through 4 bottom rows
+
+    Top rows cycle:    row1 → row2 → row3 → row4 → row1 → ...
+    Bottom rows cycle: row1 → row2 → row3 → row4 → row1 → ...
+
     Parameters
-    ----------
+   
     layout : arcpy.mp.Layout
-        The layout object to draw elements on.
     point_records : list of dict
-        Records produced by build_point_records_with_layout_xy.
+        Records from build_point_records_with_layout_xy.
+        Can contain both POINT and LINE type records.
     band_y_top : float
-        Y of the bottom edge of the top stationing band (inches).
-        Odd-index ticks straddle this line.
+        Y of the top map frame edge — top band ticks straddle this.
     band_y_bottom : float
-        Y of the top edge of the bottom stationing band (inches).
-        Even-index ticks straddle this line.
-    label_top_y : float
-        Y position for labels in the top band (inches).
-    label_bottom_y : float
-        Y position for labels in the bottom band (inches).
+        Y of the bottom map frame edge — bottom band ticks straddle this.
+    label_top_row1_y : float
+        Gap between top border and Bar 1.
+    label_top_row2_y : float
+        Gap between Bar 1 and Bar 2.
+    label_top_row3_y : float
+        Gap between Bar 2 and Bar 3.
+    label_top_row4_y : float
+        Gap between Bar 3 and Bar 4.
+    label_bottom_row1_y : float
+        Gap between bottom band top border and Bar 4.
+    label_bottom_row2_y : float
+        Gap between Bar 4 and Bar 5.
+    label_bottom_row3_y : float
+        Gap between Bar 5 and Bar 6.
+    label_bottom_row4_y : float
+        Gap between Bar 6 and Bar 7.
     half_tick : float
-        How far the tick extends above and below the band edge (inches).
-        Total tick height = half_tick * 2.
+        How far tick extends above and below band edge in inches.
     text_height : float
         Label text height in inches — converted to points internally.
     font_name : str
         Font to use for labels.
     prefix : str
-        Name prefix for all created elements — used for cleanup later.
+        Name prefix for all created elements — used for cleanup.
     max_label_chars : int
-        Maximum characters per line before the label text wraps.
+        Maximum characters per line before wrapping.
     """
-    aprx = arcpy.mp.ArcGISProject("CURRENT")
-    created = []
-
-    # Convert text height from inches to points (1 inch = 72 points)
+    aprx          = arcpy.mp.ArcGISProject("CURRENT")
+    created       = []
     text_size_pts = text_height * 72
+
+    # Independent counters — each type cycles through its own rows separately
+    # so intersections and overlaps never interfere with each other
+    point_counter = 0   # cycles 0-3 through 4 top band rows
+    line_counter  = 0   # cycles 0-3 through 4 bottom band rows
+
+    # Top band — 4 rows for intersections
+    top_rows = [
+        label_top_row1_y,   # gap above Bar 1
+        label_top_row2_y,   # gap between Bar 1 and Bar 2
+        label_top_row3_y,   # gap between Bar 2 and Bar 3
+        label_top_row4_y,   # gap between Bar 3 and Bar 4
+    ]
+
+    # Bottom band — 4 rows for overlaps
+    bottom_rows = [
+        label_bottom_row1_y,   # gap above Bar 4
+        label_bottom_row2_y,   # gap between Bar 4 and Bar 5
+        label_bottom_row3_y,   # gap between Bar 5 and Bar 6
+        label_bottom_row4_y,   # gap between Bar 6 and Bar 7
+    ]
 
     for i, rec in enumerate(point_records, start=1):
 
-        # Only process point records — skip anything else in the list
-        if rec.get("type") != "POINT":
+        rec_type = rec.get("type")
+
+        # Only process POINT and LINE records
+        if rec_type not in ("POINT", "LINE"):
             continue
 
-        # Use map layout x so the tick sits directly above the real map feature
-        # This value was computed by _map_point_to_layout_xy earlier
+        # x position from map layout coordinates
         x = rec.get("x_map_layout")
 
-        # Use source name as the primary label — fall back to chainage if missing
+        # Source name is primary label — fall back to chainage
         label_text = (
-            rec.get("label") or rec.get("source_name") or rec.get("chainage") or ""
+            rec.get("label")
+            or rec.get("source_name")
+            or rec.get("chainage")
+            or ""
         )
 
-        # Skip if position or label text is missing
         if x is None or not label_text:
             continue
 
         # Wrap long labels so they do not run into neighbouring labels
         label_text = wrap_label_text(label_text, max_chars=max_label_chars)
 
-        # Alternate between top band and bottom band
-        # Odd index  → top band tick + label
-        # Even index → bottom band tick + label
-        # Alternate between top band and bottom band
-        # Odd index  (1, 3, 5...) → top band tick + label
-        # Even index (2, 4, 6...) → bottom band tick + label
-        if i % 2 == 1:
-            # Odd record — tick at the bottom edge of the top band
-            tick_band_y = band_y_top
+        # Route by type — NOT by index  route by type 
+        if rec_type == "POINT":
+            # Intersection - top band
+            tick_band_y     = band_y_top
+            current_label_y = top_rows[point_counter % 4]
+            point_counter  += 1
 
-            # Cycle through 3 label rows within the top band
-            # i=1 → row1, i=3 → row2, i=5 → row3, i=7 → row1 again etc.
-            # We use (i // 2) % 3 to step through rows only on odd records
-            row_index = (i // 2) % 3
-            if row_index == 0:
-                current_label_y = label_top_row1_y  # gap above Bar 1
-            elif row_index == 1:
-                current_label_y = label_top_row2_y  # gap between Bar 1 and Bar 2
-            else:
-                current_label_y = label_top_row3_y  # gap between Bar 2 and Bar 3
-
-            # Label is centred in the gap between bar lines
-            anchor = "CenterPoint"
+            # Draw single tick
+            try:
+                tick_geom = arcpy.Polyline(
+                    arcpy.Array([
+                        arcpy.Point(x, tick_band_y - half_tick),
+                        arcpy.Point(x, tick_band_y + half_tick),
+                    ])
+                )
+                tick_el      = aprx.createGraphicElement(layout, tick_geom)
+                tick_el.name = f"{prefix}_Tick_{i}"
+                created.append(tick_el)
+            except Exception as e:
+                arcpy.AddWarning(
+                    f"Could not create tick for '{label_text}': {type(e).__name__}: {e}"
+                )
 
         else:
-            # Even record — tick at the top edge of the bottom band
-            tick_band_y = band_y_bottom
-            current_label_y = label_bottom_y
-            anchor = "CenterPoint"
+            # Overlap - bottom band
+            # Two ticks — one at entry, one at exit
+            # One label centred between them
+            tick_band_y     = band_y_bottom
+            current_label_y = bottom_rows[line_counter % 4]
 
-        # Draw vertical tick straddling the band edge
-        try:
-            tick_geom = arcpy.Polyline(
-                arcpy.Array(
-                    [
-                        # Slightly below the band edge
-                        arcpy.Point(x, tick_band_y - half_tick),
-                        # Slightly above the band edge
-                        arcpy.Point(x, tick_band_y + half_tick),
-                    ]
-                )
-            )
+            # Use x_mid for label, x1 and x2 for ticks
+            x1 = rec.get("x1_map_layout")
+            x2 = rec.get("x2_map_layout")
+            x  = rec.get("x_mid_layout")   # override x for label
 
-            tick_el = aprx.createGraphicElement(layout, tick_geom)
-            tick_el.name = f"{prefix}_Tick_{i}"  # named for cleanup later
-            created.append(tick_el)
+            line_counter += 1
 
-        except Exception as e:
-            arcpy.AddWarning(
-                f"Could not create tick for '{label_text}': {type(e).__name__}: {e}"
-            )
+            # Draw entry tick at x1
+            if x1 is not None:
+                try:
+                    tick_geom = arcpy.Polyline(
+                        arcpy.Array([
+                            arcpy.Point(x1, tick_band_y - half_tick),
+                            arcpy.Point(x1, tick_band_y + half_tick),
+                        ])
+                    )
+                    tick_el      = aprx.createGraphicElement(layout, tick_geom)
+                    tick_el.name = f"{prefix}_Tick_{i}_entry"
+                    created.append(tick_el)
+                except Exception as e:
+                    arcpy.AddWarning(
+                        f"Could not create entry tick for '{label_text}': {type(e).__name__}: {e}"
+                    )
 
-        #  Draw label at the alternating band position
+            # Draw exit tick at x2
+            if x2 is not None:
+                try:
+                    tick_geom = arcpy.Polyline(
+                        arcpy.Array([
+                            arcpy.Point(x2, tick_band_y - half_tick),
+                            arcpy.Point(x2, tick_band_y + half_tick),
+                        ])
+                    )
+                    tick_el      = aprx.createGraphicElement(layout, tick_geom)
+                    tick_el.name = f"{prefix}_Tick_{i}_exit"
+                    created.append(tick_el)
+                except Exception as e:
+                    arcpy.AddWarning(
+                        f"Could not create exit tick for '{label_text}': {type(e).__name__}: {e}"
+                    )
+
+        # Draw label at the correct band row 
         try:
             txt = aprx.createTextElement(
                 layout,
@@ -930,15 +1090,12 @@ def draw_point_ticks_and_labels(
                 label_text,
                 text_size_pts,
             )
-            txt.name = f"{prefix}_Label_{i}"  # named for cleanup later
+            txt.name = f"{prefix}_Label_{i}"
 
-            # Apply font, size, and anchor position via CIM
             cim = txt.getDefinition("V3")
-            # BottomCenterPoint = text grows up (top band labels)
-            # TopCenterPoint    = text grows down (bottom band labels)
-            cim.anchor = anchor
+            cim.anchor = "CenterPoint"
             cim.graphic.symbol.symbol.fontFamilyName = font_name
-            cim.graphic.symbol.symbol.height = text_size_pts
+            cim.graphic.symbol.symbol.height         = text_size_pts
             txt.setDefinition(cim)
 
             created.append(txt)
@@ -948,6 +1105,69 @@ def draw_point_ticks_and_labels(
 
     return created
 
+def get_route_measures_in_extent(route_fc, extent):
+    """
+    Returns the min and max M values of the route within a given extent.
+    Used for map series to get the full page measure range including
+    overlap zones — more accurate than using the camera extent.
+
+    Parameters
+    ----------
+    route_fc : str
+        Path to the route feature class.
+    extent : arcpy.Extent
+        The page extent from the strip map index feature.
+
+    Returns
+    -------
+    tuple of (float, float) — (min_measure, max_measure)
+    Returns (None, None) if no route geometry is visible.
+    """
+    sr = arcpy.Describe(route_fc).spatialReference
+
+    # Build a polygon from the page extent corners
+    extent_polygon = arcpy.Polygon(
+        arcpy.Array([
+            arcpy.Point(extent.XMin, extent.YMin),
+            arcpy.Point(extent.XMin, extent.YMax),
+            arcpy.Point(extent.XMax, extent.YMax),
+            arcpy.Point(extent.XMax, extent.YMin),
+            arcpy.Point(extent.XMin, extent.YMin),
+        ]),
+        sr,
+    )
+
+    # Clip the route to the page extent polygon
+    extent_fc  = r"in_memory\page_extent_poly"
+    clipped_fc = r"in_memory\route_in_page"
+
+    for fc in [extent_fc, clipped_fc]:
+        if arcpy.Exists(fc):
+            arcpy.management.Delete(fc)
+
+    arcpy.management.CopyFeatures([extent_polygon], extent_fc)
+    arcpy.analysis.Intersect(
+        [route_fc, extent_fc], clipped_fc, output_type="LINE"
+    )
+
+    visible_measures = []
+    with arcpy.da.SearchCursor(clipped_fc, ["SHAPE@"]) as cursor:
+        for (shape,) in cursor:
+            if not shape:
+                continue
+            for part in shape:
+                for pnt in part:
+                    if pnt and pnt.M is not None:
+                        visible_measures.append(float(pnt.M))
+
+    for fc in [extent_fc, clipped_fc]:
+        if arcpy.Exists(fc):
+            arcpy.management.Delete(fc)
+
+    if not visible_measures:
+        return None, None
+
+    return min(visible_measures), max(visible_measures)
 
 def clear_point_ticks_and_labels(layout, prefix="PointTick"):
     """

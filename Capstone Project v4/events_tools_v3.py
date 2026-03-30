@@ -1,6 +1,5 @@
 import arcpy, os
 
-
 LEADER_ANCHOR_ID_FIELD = "LeaderAnchorID"
 POINT_EVENT_JOIN_FIELDS = ("Chainage", "MEAS", "DISTANCE")
 

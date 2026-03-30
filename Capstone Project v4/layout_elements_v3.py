@@ -14,7 +14,7 @@ BAND_BOTTOM_UPPER_FRAC = 9.50 / 11.0  # bottom edge of upper stationing band
 
 # Main map frame sits between the two bands
 MAP_TOP_FRAC = BAND_BOTTOM_UPPER_FRAC  # 9.50" / 11"
-MAP_BOTTOM_FRAC = 3.17 / 11.0  # 3.17" / 11"
+MAP_BOTTOM_FRAC = 4.5 / 11.0  # 3.17" / 11"
 
 # Bottom stationing band — 1" just above the bottom elements
 BAND_TOP_LOWER_FRAC = MAP_BOTTOM_FRAC  # 3.17" / 11"
@@ -26,15 +26,17 @@ BOTTOM_ELEMENTS_TOP_FRAC = BAND_BOTTOM_LOWER_FRAC
 # TOP band bar line positions (single y value per bar)
 # Each bar is one horizontal line — no top/bottom pair needed.
 # Three lines divide the top band into readable rows.
-TOP_BAR1_FRAC = 10.30 / 11.0  # top bar line
-TOP_BAR2_FRAC = 9.90 / 11.0  # middle bar line
-TOP_BAR3_FRAC = 9.68 / 11.0  # bottom bar line
+TOP_BAR1_FRAC = 10.0 / 11.0  # top bar line
+TOP_BAR2_FRAC = 9.5 / 11.0  # middle bar line
+TOP_BAR3_FRAC = 9.0 / 11.0  # bottom bar line
+TOP_BAR4_FRAC = 8.5 / 11.0  # bottom bar line
 
 # BOTTOM band bar line positions
 # Labels alternate between the gap above Bar 5 and the gap above Bar 6.
-BOT_BAR4_FRAC = 2.60 / 11.0  # top bar line
-# BOT_BAR5_FRAC = 2.28 / 11.0  # middle bar line
-# BOT_BAR6_FRAC = 1.85 / 11.0  # bottom bar line
+BOT_BAR4_FRAC = 4.0 / 11.0  # top bar line
+BOT_BAR5_FRAC = 3.5 / 11.0  # middle bar line
+BOT_BAR6_FRAC = 3.0 / 11.0  # bottom bar line
+BOT_BAR7_FRAC = 2.5 / 11.0  # bottom bar line
 
 
 def add_legend(project, layout, map_frame, map_name, width, height):
@@ -846,7 +848,7 @@ def add_standard_texts(project, layout, width, height):
             text_element.setDefinition(cim)
 
 
-def add_boundary_graphics(project, layout, width, height):
+def add_boundary_graphics(project, layout, width, height, map_frame):
     """
     Draws all boundary boxes and stationing bar lines on the layout.
 
@@ -871,6 +873,11 @@ def add_boundary_graphics(project, layout, width, height):
             break
 
     grouping_elements = []
+
+    # Read map frame edges directly so these three borders always
+    # align with the map frame regardless of extent changes
+    map_top = map_frame.elementPositionY + map_frame.elementHeight
+    map_bottom = map_frame.elementPositionY
 
     # Polygon boundary boxes
     boundaries = [
@@ -1251,15 +1258,15 @@ def add_boundary_graphics(project, layout, width, height):
         {
             "polygon_name": "Plan View Border",
             "x_min_poly": 0,
-            "y_min_poly": height * BAND_TOP_LOWER_FRAC,
+            "y_min_poly": map_bottom,
             "x_max_poly": width,
-            "y_max_poly": height * BAND_BOTTOM_UPPER_FRAC,
+            "y_max_poly": map_top,
             "outline": 0.5,
         },
         {
             "polygon_name": "Top Stationing Border",
             "x_min_poly": width * 0.01176363636363640,
-            "y_min_poly": height * BAND_BOTTOM_UPPER_FRAC,
+            "y_min_poly": map_top,
             "x_max_poly": width,
             "y_max_poly": height * BAND_TOP_UPPER_FRAC,
             "outline": 0.5,
@@ -1269,7 +1276,7 @@ def add_boundary_graphics(project, layout, width, height):
             "x_min_poly": width * 0.01176363636363640,
             "y_min_poly": height * BAND_BOTTOM_LOWER_FRAC,
             "x_max_poly": width,
-            "y_max_poly": height * BAND_TOP_LOWER_FRAC,
+            "y_max_poly": map_bottom,
             "outline": 0.5,
         },
     ]
@@ -1306,11 +1313,13 @@ def add_boundary_graphics(project, layout, width, height):
         # Top band — 3 lines dividing the top stationing band into rows
         {"name": "Top Bar 1", "y_frac": TOP_BAR1_FRAC},
         {"name": "Top Bar 2", "y_frac": TOP_BAR2_FRAC},
-        # {"name": "Top Bar 3", "y_frac": TOP_BAR3_FRAC},
+        {"name": "Top Bar 3", "y_frac": TOP_BAR3_FRAC},
+        {"name": "Top Bar 4", "y_frac": TOP_BAR4_FRAC},
         # Bottom band — 3 lines dividing the bottom stationing band into rows
         {"name": "Bottom Bar 4", "y_frac": BOT_BAR4_FRAC},
-        # {"name": "Bottom Bar 5", "y_frac": BOT_BAR5_FRAC},
-        # {"name": "Bottom Bar 6", "y_frac": BOT_BAR6_FRAC},
+        {"name": "Bottom Bar 5", "y_frac": BOT_BAR5_FRAC},
+        {"name": "Bottom Bar 6", "y_frac": BOT_BAR6_FRAC},
+        {"name": "Bottom Bar 7", "y_frac": BOT_BAR7_FRAC},
     ]
 
     # Left edge matches the stationing border left edge

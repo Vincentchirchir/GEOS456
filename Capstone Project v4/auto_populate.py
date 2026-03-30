@@ -1,23 +1,27 @@
 import arcpy
 import datetime
+import os
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AUTO-POPULATE LAYOUT TEXT ELEMENTS
 #
-# This  fills in layout text elements that can be derived automatically
-# from the tool inputs and pipeline outputs. It targets elements by their
-# name as set in add_standard_texts() in layout_elements_v3.py.
+# Fills layout text elements that can be derived automatically from the
+# tool inputs and pipeline outputs.
+#
+# Supports both full-route mode (single layout) and per-page mode (map series).
+# In per-page mode, pass page_start and page_end instead of route_start/end,
+# and pass page_band_records filtered to the current page.
 #
 # Elements auto-populated:
 #   - Pipe Name           from input line feature class base name
-#   - Starting Station    from route_start measure
-#   - Ending Station      from route_end measure
+#   - Starting Station    from route_start (or page_start in map series)
+#   - Ending Station      from route_end   (or page_end   in map series)
 #   - Total Length        from route_end - route_start
 #   - Date                from today's date
 #   - Coordinate System   from route spatial reference
 #   - From / To           from input line feature class extent
-#   - Intersection Table  from band_records point intersections
+#   - Intersection Table  from band_records (filtered to page in map series)
 #   - Intersection Summary from band_records grouped by source name
 #
 # Elements left blank for manual entry:
@@ -32,19 +36,8 @@ def _set_text_element_at(layout, project, element_name, text, x, y, font_size=3)
     """
     Creates or updates a text element at a specific x, y position on the layout.
 
-    If an element with this name already exists it is deleted first so
-    reruns do not stack duplicate text elements on top of each other.
-
-    Parameters
-    ----------
-    layout : arcpy.mp.Layout
-    project : arcpy.mp.ArcGISProject
-    element_name : str
-    text : str
-    x, y : float
-        Position in layout page units (inches).
-    font_size : float
-        Font size in points.
+    Deletes any existing element with the same name first so reruns do not
+    stack duplicate elements on top of each other.
     """
     # Delete existing element with this name to avoid duplicates on rerun
     for el in layout.listElements("TEXT_ELEMENT"):
@@ -78,28 +71,29 @@ def _set_text_element_at(layout, project, element_name, text, x, y, font_size=3)
 def _set_text_element(layout, element_name, new_text):
     """
     Finds a text element on the layout by name and updates its text content.
-
-    Parameters
-    ----------
-    layout : arcpy.mp.Layout
-    element_name : str
-        Must match the name set on the element in add_standard_texts().
-    new_text : str
-        The text to write into the element.
-
-    Returns
-    -------
-    bool — True if the element was found and updated, False if not found.
+    In ArcGIS Pro 3.3+, layout.listElements searches all elements including
+    those inside groups.
     """
     for el in layout.listElements("TEXT_ELEMENT"):
         if el.name == element_name:
             el.text = new_text
             return True
 
-    # Warn if the element was not found — helps diagnose name mismatches
     arcpy.AddWarning(
         f"Auto-populate: could not find text element '{element_name}' on layout."
     )
+    return False
+
+
+def _clear_text_element(layout, element_name):
+    """
+    Clears the text content of a named element to an empty string.
+    Used to blank out rows that have no data on the current page.
+    """
+    for el in layout.listElements("TEXT_ELEMENT"):
+        if el.name == element_name:
+            el.text = ""
+            return True
     return False
 
 
@@ -116,10 +110,65 @@ def _format_chainage(value):
 
 def _format_coordinate(value, decimal_places=2):
     """
-    Formats a coordinate value to a readable string with units.
+    Formats a coordinate value to a readable string.
     Rounds to the given number of decimal places.
     """
     return f"{round(value, decimal_places)}"
+
+
+def _clear_intersection_table(layout, project, width, height, row_count=8):
+    """
+    Clears all intersection table row text elements.
+    Called before repopulating so stale data from previous pages is removed.
+    """
+    col_id_x = width * 0.6330
+    col_stationing_x = width * 0.6890
+    col_type_x = width * 0.7440
+
+    row_y_positions = [
+        height * ((0.1411 + 0.1613) / 2),
+        height * ((0.1209 + 0.1411) / 2),
+        height * ((0.1007 + 0.1209) / 2),
+        height * ((0.0805 + 0.1007) / 2),
+        height * ((0.0603 + 0.0805) / 2),
+        height * ((0.0401 + 0.0603) / 2),
+        height * ((0.0199 + 0.0401) / 2),
+        height * ((0.0000 + 0.0199) / 2),
+    ]
+
+    for idx in range(1, row_count + 1):
+        # Delete and recreate as empty so the cell is visually blank
+        _set_text_element_at(
+            layout,
+            project,
+            f"Intersection Row {idx} ID",
+            "",
+            col_id_x,
+            row_y_positions[idx - 1],
+            6,
+        )
+        _set_text_element_at(
+            layout,
+            project,
+            f"Intersection Row {idx} Stationing",
+            "",
+            col_stationing_x,
+            row_y_positions[idx - 1],
+            6,
+        )
+        _set_text_element_at(
+            layout,
+            project,
+            f"Intersection Row {idx} Type",
+            "",
+            col_type_x,
+            row_y_positions[idx - 1],
+            4,
+        )
+
+    # Clear summary rows
+    for idx in range(1, 5):
+        _clear_text_element(layout, f"Intersection Summary Row {idx}")
 
 
 def auto_populate_layout(
@@ -132,44 +181,52 @@ def auto_populate_layout(
     route_start,
     route_end,
     band_records,
+    is_page_update=False,
 ):
     """
     Fills all auto-populatable text elements on the layout.
 
-    Call this after the layout has been created and all text elements
-    have been added by add_standard_texts() in layout_elements_v3.py.
+    Can be called in two modes:
+        Full route mode  (is_page_update=False) — populates with full route values
+        Per-page mode    (is_page_update=True)  — populates with page-specific values
+                                                   route_start/end are the page range
+                                                   band_records are filtered to the page
 
     Parameters
     ----------
     layout : arcpy.mp.Layout
-        The layout object containing the text elements to populate.
+    project : arcpy.mp.ArcGISProject
+    width, height : float
+        Page dimensions in inches.
     input_line_fc : str
-        Path to the input line feature class — used for pipe name and extent.
+        Path to input line feature class.
     route_fc : str
-        Path to the route feature class — used for coordinate system.
+        Path to route feature class.
     route_start : float
-        Minimum measure value of the route (from get_route_measure_range).
+        Start measure — full route start or page start in map series.
     route_end : float
-        Maximum measure value of the route (from get_route_measure_range).
+        End measure — full route end or page end in map series.
     band_records : list of dict
-        Records from build_band_records — used for intersection table and summary.
+        Full route records or page-filtered records in map series.
+    is_page_update : bool
+        If True, suppresses Pipe Name, Date, Coordinate System, From/To
+        since those do not change per page.
     """
+    if not is_page_update:
+        arcpy.AddMessage("Auto-populating layout text elements...")
+    else:
+        arcpy.AddMessage("  Auto-populating page text elements...")
 
-    arcpy.AddMessage("Auto-populating layout text elements...")
+    # Pipe Name — only on first population, not per page
+    if not is_page_update:
+        try:
+            pipe_name = os.path.splitext(os.path.basename(input_line_fc))[0]
+            _set_text_element(layout, "Pipe Name", pipe_name)
+            arcpy.AddMessage(f"  Pipe Name: {pipe_name}")
+        except Exception as e:
+            arcpy.AddWarning(f"  Could not set Pipe Name: {e}")
 
-    # Pipe Name
-    # Use the base name of the input feature class — strips path and extension
-    try:
-        import os
-
-        pipe_name = os.path.splitext(os.path.basename(input_line_fc))[0]
-        _set_text_element(layout, "Pipe Name", pipe_name)
-        arcpy.AddMessage(f"  Pipe Name: {pipe_name}")
-    except Exception as e:
-        arcpy.AddWarning(f"  Could not set Pipe Name: {e}")
-
-    # Starting and Ending Station
-    # Formatted as chainage strings e.g. 0+000 and 3+803
+    # Starting and Ending Station — updates per page in map series
     try:
         start_ch = _format_chainage(route_start)
         end_ch = _format_chainage(route_end)
@@ -180,11 +237,9 @@ def auto_populate_layout(
     except Exception as e:
         arcpy.AddWarning(f"  Could not set station fields: {e}")
 
-    # Total Length
-    # route_end - route_start gives the total measured length in route units
+    #  Total Length — updates per page in map series
     try:
         total_length = route_end - route_start
-        # Format as km if over 1000, otherwise in metres
         if total_length >= 1000:
             length_str = f"{total_length / 1000:.3f} km"
         else:
@@ -194,77 +249,70 @@ def auto_populate_layout(
     except Exception as e:
         arcpy.AddWarning(f"  Could not set Total Length: {e}")
 
-    #  Date
-    # Today's date formatted as DD/MM/YYYY
+    #  Date — only on first population
+    if not is_page_update:
+        try:
+            today = datetime.date.today().strftime("%d/%m/%Y")
+            _set_text_element(layout, "Date", today)
+            arcpy.AddMessage(f"  Date: {today}")
+        except Exception as e:
+            arcpy.AddWarning(f"  Could not set Date: {e}")
+
+    # Coordinate System — only on first population
+    if not is_page_update:
+        try:
+            sr_name = arcpy.Describe(route_fc).spatialReference.name
+            _set_text_element(layout, "Coordinate System", sr_name)
+            arcpy.AddMessage(f"  Coordinate System: {sr_name}")
+        except Exception as e:
+            arcpy.AddWarning(f"  Could not set Coordinate System: {e}")
+
+    # From / To — only on first population
+    if not is_page_update:
+        try:
+            desc = arcpy.Describe(input_line_fc)
+            extent = desc.extent
+
+            from_str = (
+                f"From: X {_format_coordinate(extent.XMin)}, "
+                f"Y {_format_coordinate(extent.YMin)}"
+            )
+            to_str = (
+                f"To:   X {_format_coordinate(extent.XMax)}, "
+                f"Y {_format_coordinate(extent.YMax)}"
+            )
+
+            _set_text_element(layout, "From", from_str)
+            _set_text_element(layout, "To", to_str)
+            arcpy.AddMessage(f"  {from_str}")
+            arcpy.AddMessage(f"  {to_str}")
+
+        except Exception as e:
+            arcpy.AddWarning(f"  Could not set From/To: {e}")
+
+    # Intersection Table — always updates per page
+    # Clear all rows first so stale data from previous page is removed
     try:
-        today = datetime.date.today().strftime("%d/%m/%Y")
-        _set_text_element(layout, "Date", today)
-        arcpy.AddMessage(f"  Date: {today}")
-    except Exception as e:
-        arcpy.AddWarning(f"  Could not set Date: {e}")
+        _clear_intersection_table(layout, project, width, height)
 
-    # Coordinate System
-    # Read from the route feature class spatial reference
-    try:
-        sr_name = arcpy.Describe(route_fc).spatialReference.name
-        _set_text_element(layout, "Coordinate System", sr_name)
-        arcpy.AddMessage(f"  Coordinate System: {sr_name}")
-    except Exception as e:
-        arcpy.AddWarning(f"  Could not set Coordinate System: {e}")
-
-    #  From / To
-    # Read from the bounding extent of the input line feature class
-    # Expressed as X/Y coordinates of the SW and NE corners
-    try:
-        desc = arcpy.Describe(input_line_fc)
-        extent = desc.extent
-
-        from_str = (
-            f"From: X {_format_coordinate(extent.XMin)}, "
-            f"Y {_format_coordinate(extent.YMin)}"
-        )
-        to_str = (
-            f"To:   X {_format_coordinate(extent.XMax)}, "
-            f"Y {_format_coordinate(extent.YMax)}"
-        )
-
-        _set_text_element(layout, "From", from_str)
-        _set_text_element(layout, "To", to_str)
-        arcpy.AddMessage(f"  {from_str}")
-        arcpy.AddMessage(f"  {to_str}")
-
-    except Exception as e:
-        arcpy.AddWarning(f"  Could not set From/To: {e}")
-
-    # Intersection Table rows
-    # Each column has its own text element positioned within its column box.
-    # Column x positions match the boundary boxes in layout_elements_v3.py:
-    #   ID column        → left of table to row divider 1  (~0.6058 to 0.6613)
-    #   Stationing column → row divider 1 to row divider 2  (~0.6613 to 0.7167)
-    #   Type column       → row divider 2 to table right    (~0.7167 to 0.7715)
-    try:
         point_records = [r for r in band_records if r.get("type") == "POINT"]
         line_records = [r for r in band_records if r.get("type") == "LINE"]
         all_records = point_records + line_records
 
-        # Y centre positions matching the actual Intersection Table Row boxes
-        # Each centre = (y_max + y_min) / 2 for each row polygon
-
         row_y_positions = [
-            height * ((0.1411 + 0.1613) / 2),  # Row 1 centre
-            height * ((0.1209 + 0.1411) / 2),  # Row 2 centre
-            height * ((0.1007 + 0.1209) / 2),  # Row 3 centre
-            height * ((0.0805 + 0.1007) / 2),  # Row 4 centre
-            height * ((0.0603 + 0.0805) / 2),  # Row 5 centre
-            height * ((0.0401 + 0.0603) / 2),  # Row 6 centre
-            height * ((0.0199 + 0.0401) / 2),  # Row 7 centre
-            height * ((0.0000 + 0.0199) / 2),  # Row 8 centre
+            height * ((0.1411 + 0.1613) / 2),
+            height * ((0.1209 + 0.1411) / 2),
+            height * ((0.1007 + 0.1209) / 2),
+            height * ((0.0805 + 0.1007) / 2),
+            height * ((0.0603 + 0.0805) / 2),
+            height * ((0.0401 + 0.0603) / 2),
+            height * ((0.0199 + 0.0401) / 2),
+            height * ((0.0000 + 0.0199) / 2),
         ]
 
-        # X centre positions for each column
-        col_id_x = width * 0.6330  # centre of ID column
-        col_stationing_x = width * 0.6890  # centre of Stationing column
-        col_type_x = width * 0.7440  # centre of Type column
+        col_id_x = width * 0.6330
+        col_stationing_x = width * 0.6890
+        col_type_x = width * 0.7440
 
         for idx, rec in enumerate(all_records, start=1):
             if idx > 8:
@@ -285,7 +333,6 @@ def auto_populate_layout(
                 source_name = rec.get("source_name", "")
                 rec_type = "Overlap"
 
-            # ID column — row number
             _set_text_element_at(
                 layout,
                 project,
@@ -296,7 +343,6 @@ def auto_populate_layout(
                 6,
             )
 
-            #  Stationing column — chainage value
             _set_text_element_at(
                 layout,
                 project,
@@ -307,7 +353,6 @@ def auto_populate_layout(
                 6,
             )
 
-            #  Type column — feature name and type
             _set_text_element_at(
                 layout,
                 project,
@@ -318,18 +363,18 @@ def auto_populate_layout(
                 4,
             )
 
-        arcpy.AddMessage(
-            f"  Intersection Table: populated {min(len(all_records), 8)} rows."
-        )
+        if all_records:
+            arcpy.AddMessage(
+                f"  Intersection Table: populated {min(len(all_records), 8)} rows."
+            )
+        else:
+            arcpy.AddMessage("  Intersection Table: no records on this page — cleared.")
 
     except Exception as e:
         arcpy.AddWarning(f"  Could not populate Intersection Table: {e}")
 
-    # Intersection Summary
-    # Groups records by source_name and counts intersections and overlaps.
-    # Layout has 8 summary row boxes.
-    try:
-        summary = {}  # { source_name: {"intersections": n, "overlaps": n} }
+        # Intersection Summary always updates per page
+        summary = {}
 
         for rec in band_records:
             name = rec.get("source_name", "Unknown")
@@ -341,6 +386,10 @@ def auto_populate_layout(
             elif rec["type"] == "LINE":
                 summary[name]["overlaps"] += 1
 
+        # Clear all summary rows first
+        for idx in range(1, 5):
+            _clear_text_element(layout, f"Intersection Summary Row {idx}")
+
         for idx, (name, counts) in enumerate(summary.items(), start=1):
             if idx > 4:
                 arcpy.AddWarning(
@@ -349,28 +398,27 @@ def auto_populate_layout(
                 )
                 break
 
-            intersections = counts["intersections"]
-            overlaps = counts["overlaps"]
-
-            # Build summary row text
             parts = []
-            if intersections > 0:
-                parts.append(
-                    f"{intersections} intersection{'s' if intersections > 1 else ''}"
-                )
-            if overlaps > 0:
-                parts.append(f"{overlaps} overlap{'s' if overlaps > 1 else ''}")
+            if counts["intersections"] > 0:
+                n = counts["intersections"]
+                parts.append(f"{n} intersection{'s' if n > 1 else ''}")
+            if counts["overlaps"] > 0:
+                n = counts["overlaps"]
+                parts.append(f"{n} overlap{'s' if n > 1 else ''}")
 
             row_text = f"{name}:  {', '.join(parts)}"
+            _set_text_element(layout, f"Intersection Summary Row {idx}", row_text)
 
-            element_name = f"Intersection Summary Row {idx}"
-            _set_text_element(layout, element_name, row_text)
-
-        arcpy.AddMessage(
-            f"  Intersection Summary: populated {min(len(summary), 4)} rows."
-        )
+        if summary:
+            arcpy.AddMessage(
+                f"  Intersection Summary: populated {min(len(summary), 4)} rows."
+            )
+        else:
+            arcpy.AddMessage(
+                "  Intersection Summary: no records on this page — cleared."
+            )
 
     except Exception as e:
         arcpy.AddWarning(f"  Could not populate Intersection Summary: {e}")
 
-    arcpy.AddMessage("Auto-population complete.")
+    arcpy.AddMessage("  Auto-population complete.")

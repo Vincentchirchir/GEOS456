@@ -81,10 +81,12 @@ def generate_alignment_layout(
 
     # Main map frame
     main_extent = arcpy.Extent(
-        width * 0.01181818181818180,
-        height * (3.17 / 11.0),
-        width,
-        height * (9.50 / 11.0),
+        width * 0.01181818181818180,  # left edge
+        height
+        * (4.5 / 11.0),  # bottom edge — you can increase to reduce height or decrease
+        width * 0.98,  # right edge — you can decrease to reduce width or increase
+        height
+        * (8.0 / 11.0),  # top edge — you can decrease to reduce heightor increase
     )
     main_map_frame = layout.createMapFrame(main_extent, main_map, "Map Frame")
 
@@ -128,7 +130,7 @@ def generate_alignment_layout(
     mini_extent = arcpy.Extent(
         width * 0.32545454545454500,
         0,
-        width * 0.55,
+        width * 0.48090909090909100,
         height * 0.15181818181818200,
     )
     mini_map_frame = layout.createMapFrame(mini_extent, mini_map, "Mini Map Frame")
@@ -186,7 +188,7 @@ def generate_alignment_layout(
         )
 
     arcpy.AddMessage("Adding layout elements...")
-    add_boundary_graphics(aprx, layout, width, height)
+    add_boundary_graphics(aprx, layout, width, height, main_map_frame)
     add_north_arrow(aprx, layout, main_map_frame, width, height)
     add_legend(aprx, layout, main_map_frame, main_map_name, width, height)
     add_scale_bar(aprx, layout, main_map_frame, width, height)

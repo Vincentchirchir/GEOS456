@@ -12,16 +12,37 @@ def create_layout_map_series(
     orientation,
     overlap_percent,
 ):
+    """
+    Creates a strip map index feature class and sets up a spatial map series
+    on the layout. The index features drive the per-page extent and rotation.
+
+    Parameters
+    ----------
+    input_line_fc : str
+        Path to the input pipeline feature class.
+    output_gdb : str
+        Path to the output geodatabase where the index FC is saved.
+    layout : arcpy.mp.Layout
+    map_frame : arcpy.mp.MapFrame
+    main_map : arcpy.mp.Map
+    scale : int
+        Map series scale.
+    orientation : str
+        "Horizontal" or "Vertical".
+    overlap_percent : int
+        Overlap percentage between pages (0-99).
+
+    Returns
+    -------
+    dict with keys: index_fc, index_layer, map_series
+    """
     data_input = os.path.splitext(os.path.basename(str(input_line_fc)))[0]
     index_output = os.path.join(output_gdb, f"{data_input}_index")
-
-    mf_width = f"{float(map_frame.elementWidth) * 0.90} Inches"
-    mf_height = f"{float(map_frame.elementHeight) * 0.90} Inches"
 
     if arcpy.Exists(index_output):
         arcpy.management.Delete(index_output)
 
-        # Validate numeric inputs
+    # Validate numeric inputs
     scale = int(scale)
     overlap_percent = int(overlap_percent)
 
@@ -31,8 +52,8 @@ def create_layout_map_series(
     if overlap_percent < 0 or overlap_percent > 99:
         raise ValueError("Overlap percent must be between 0 and 99.")
 
-    # Use page size from map frame
-    mf_width = f"{float(map_frame.elementWidth) * 0.90} Inches"
+    # Use 90% of map frame width and 65% of height so the route fits with margin
+    mf_width = f"{float(map_frame.elementWidth)  * 0.90} Inches"
     mf_height = f"{float(map_frame.elementHeight) * 0.65} Inches"
 
     arcpy.AddMessage(f"Map frame width used: {mf_width}")
@@ -41,6 +62,7 @@ def create_layout_map_series(
     arcpy.AddMessage(f"Map series overlap used: {overlap_percent}")
     arcpy.AddMessage(f"Map series orientation used: {orientation}")
 
+    # Create strip map index features — one polygon per page
     arcpy.cartography.StripMapIndexFeatures(
         in_features=input_line_fc,
         out_feature_class=index_output,
@@ -52,9 +74,11 @@ def create_layout_map_series(
         overlap_percentage=overlap_percent,
     )
 
+    # Add index layer to the map — hidden from legend
     index_layer = main_map.addDataFromPath(index_output)
     index_layer.visible = False
 
+    # Create the spatial map series driven by the index layer
     map_series = layout.createSpatialMapSeries(
         mapframe=map_frame,
         index_layer=index_layer,
@@ -62,17 +86,16 @@ def create_layout_map_series(
         sort_field="PageNumber",
     )
 
+    # Configure map series via CIM
     cim = map_series.getDefinition("V3")
     cim.enabled = True
     cim.mapFrameName = map_frame.name
     cim.indexLayerURI = index_layer.getDefinition("V3").uRI
     cim.sortAscending = True
     cim.extentOptions = "BestFit"
-    cim.rotationField = "Angle"
+    cim.rotationField = "Angle"  # auto-rotate to follow route
     cim.startingPageNumber = 1
     map_series.setDefinition(cim)
-
-    # map_frame.camera.scale = int(scale)
 
     return {
         "index_fc": index_output,
@@ -84,16 +107,14 @@ def create_layout_map_series(
 # ─────────────────────────────────────────────────────────────────────────────
 # MAP SERIES PAGE UPDATER
 #
-# This module loops through every page in a spatial map series and for each
-# page:
-#   1. Sets the current page
-#   2. Applies the rotation angle from the index feature Angle field
-#   3. Reads the visible route measures from the map frame extent
-#   4. Filters band records to only those visible on this page
-#   5. Redraws the stationing band (top + bottom) for the page measure range
-#   6. Redraws ticks and labels for only the intersections on this page
-#
-# The user exports manually after running this tool.
+# Loops through every page and for each page:
+#   1. Sets the active page
+#   2. Applies rotation from the index Angle field
+#   3. Gets the visible measure range from the map frame extent
+#   4. Filters band records to the visible range
+#   5. Redraws ticks and labels for this page only
+#   6. Auto-populates all text elements with page-specific values
+#      — empty pages get cleared tables and updated station values
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -105,16 +126,7 @@ def _get_page_rotation(index_fc, page_number):
     represents the rotation needed to align the map frame with the route
     direction on that page.
 
-    Parameters
-    ----------
-    index_fc : str
-        Path to the strip map index feature class.
-    page_number : int
-        The page number to look up.
-
-    Returns
-    -------
-    float — rotation angle in degrees, or 0.0 if not found.
+    Returns 0.0 if the angle cannot be read.
     """
     try:
         with arcpy.da.SearchCursor(
@@ -131,24 +143,10 @@ def _get_page_rotation(index_fc, page_number):
 
 def _filter_band_records_to_page(band_records, page_start, page_end):
     """
-    Filters band records to only those whose measure falls within the
-    visible measure range of the current page.
+    Filters band records to only those visible on the current page.
 
-    Points are included if their meas falls within [page_start, page_end].
-    Lines are included if they overlap the page range at all.
-
-    Parameters
-    ----------
-    band_records : list of dict
-        Full list of band records for the entire route.
-    page_start : float
-        Minimum visible measure on this page.
-    page_end : float
-        Maximum visible measure on this page.
-
-    Returns
-    -------
-    list of dict — filtered records for this page only.
+    POINT records are included if their meas falls within [page_start, page_end].
+    LINE records are included if they overlap the page range at all.
     """
     filtered = []
 
@@ -162,48 +160,9 @@ def _filter_band_records_to_page(band_records, page_start, page_end):
             fmeas = rec.get("fmeas")
             tmeas = rec.get("tmeas")
             if fmeas is not None and tmeas is not None:
-                # Include if the line overlaps the page range at all
+                # Include if the overlap range intersects the page range at all
                 if fmeas <= page_end and tmeas >= page_start:
                     filtered.append(rec)
-
-    return filtered
-
-
-def _filter_point_xy_records_to_page(point_records_with_xy, map_frame):
-    """
-    Filters point records with layout XY to only those whose map position
-    falls within the current map frame extent.
-
-    This ensures ticks are only drawn for intersection points visible on
-    the current page — not for points on other pages.
-
-    Parameters
-    ----------
-    point_records_with_xy : list of dict
-        Records with x_map_layout and y_map_layout already computed.
-    map_frame : arcpy.mp.MapFrame
-        The map frame whose camera extent defines the visible area.
-
-    Returns
-    -------
-    list of dict — filtered records for this page only.
-    """
-    try:
-        extent = map_frame.camera.getExtent()
-    except Exception as e:
-        arcpy.AddWarning(f"Could not get map frame extent for filtering: {e}")
-        return point_records_with_xy
-
-    filtered = []
-
-    for rec in point_records_with_xy:
-        # x_map_layout and y_map_layout are in layout page space (inches)
-        # We need to check against the map coordinate extent instead
-        # The map coordinates are stored implicitly via the measure position
-        # Use the meas value to check if the point is within the page range
-        meas = rec.get("meas")
-        if meas is not None:
-            filtered.append(rec)
 
     return filtered
 
@@ -216,24 +175,36 @@ def update_map_series_pages(
     route_fc,
     band_records,
     point_event_features,
+    line_event_features,
     band_geom,
     route_start,
     route_end,
+    input_line_fc,
+    project,
+    width,
+    height,
+    export_pdf=False,
+    pdf_output_folder=None,
+    layout_name="Layout",
 ):
     """
-    Loops through all pages in the map series and updates the stationing
-    band, ticks, and labels for each page.
+    Loops through all pages in the map series and updates everything
+    dynamically per page.
 
     For each page:
         1. Sets the active page
         2. Applies rotation from the index Angle field
         3. Gets the visible measure range from the map frame extent
         4. Filters band records to the visible range
-        5. Redraws stationing band for the page
-        6. Redraws ticks and labels for visible intersections only
+        5. Clears and redraws ticks and labels for this page
+           — POINT intersections -top band
+           — LINE overlaps       -bottom band (two ticks + centred label)
+        6. Auto-populates all text elements with page-specific values
+           — Starting/Ending Station, Total Length update per page
+           — Intersection Table shows only features on this page
+           — Empty pages get cleared tables
 
     Parameters
-    ----------
     layout : arcpy.mp.Layout
     map_frame : arcpy.mp.MapFrame
     map_series : arcpy.mp.SpatialMapSeries
@@ -245,25 +216,28 @@ def update_map_series_pages(
         Full band records for the entire route.
     point_event_features : list of str
         Paths to point event feature classes.
+    line_event_features : list of str
+        Paths to line event feature classes.
     band_geom : dict
         Band geometry from _get_stationing_band_geometry().
-    route_start : float
-        Full route minimum measure.
-    route_end : float
-        Full route maximum measure.
+    route_start, route_end : float
+        Full route measure range.
+    input_line_fc : str
+        Path to input line feature class — for auto-populate.
+    project : arcpy.mp.ArcGISProject
+        Current project — for auto-populate text element creation.
+    width, height : float
+        Page dimensions in inches.
     """
-    # Import here to avoid circular imports — these come from band_tools.py
+    # Import from band_tools and auto_populate here to avoid circular imports
     from band_tools import (
-        prepare_layout_band_records,
-        filter_point_records_for_labeling,
-        assign_line_label_sides,
-        clear_line_band_labels,
-        draw_line_band_labels,
         clear_point_ticks_and_labels,
         build_point_records_with_layout_xy,
+        build_line_records_with_layout_xy,
         draw_point_ticks_and_labels,
-        get_route_measures_in_current_extent,
+        get_route_measures_in_extent,
     )
+    from auto_populate import auto_populate_layout
 
     page_count = map_series.pageCount
     arcpy.AddMessage(f"Updating {page_count} map series pages...")
@@ -271,14 +245,14 @@ def update_map_series_pages(
     for page_num in range(1, page_count + 1):
         arcpy.AddMessage(f"  Processing page {page_num} of {page_count}...")
 
-        # ── Step 1: Set the active page ───────────────────────────────────────
+        # Step 1: Set the active page
         try:
             map_series.currentPageNumber = page_num
         except Exception as e:
             arcpy.AddWarning(f"  Could not set page {page_num}: {e}")
             continue
 
-        # ── Step 2: Apply rotation from index Angle field ─────────────────────
+        # Step 2: Apply rotation from index Angle field
         try:
             angle = _get_page_rotation(index_fc, page_num)
             map_frame.camera.heading = angle
@@ -286,11 +260,26 @@ def update_map_series_pages(
         except Exception as e:
             arcpy.AddWarning(f"  Could not apply rotation for page {page_num}: {e}")
 
-        # ── Step 3: Get visible measure range from map frame extent ───────────
+        # Step 3: Get measure range from index page extent
+        # Uses the index polygon extent — includes full overlap zone
+        # More accurate than camera extent which clips tightly
         try:
-            page_start, page_end = get_route_measures_in_current_extent(
-                route_fc, map_frame
-            )
+            page_extent = None
+            with arcpy.da.SearchCursor(
+                index_fc,
+                ["PageNumber", "SHAPE@"],
+                where_clause=f"PageNumber = {page_num}",
+            ) as cursor:
+                for row in cursor:
+                    page_extent = row[1].extent
+                    break
+
+            if page_extent is None:
+                arcpy.AddWarning(f"  Could not read page extent for page {page_num}.")
+                continue
+
+            page_start, page_end = get_route_measures_in_extent(route_fc, page_extent)
+
         except Exception as e:
             arcpy.AddWarning(f"  Could not get measure range for page {page_num}: {e}")
             continue
@@ -299,116 +288,161 @@ def update_map_series_pages(
             arcpy.AddWarning(f"  No route visible on page {page_num} — skipping.")
             continue
 
+        # log the page extent and measure range to confirm correctness
+        arcpy.AddMessage(
+            f"  Page {page_num} index extent: "
+            f"XMin={page_extent.XMin:.1f}, XMax={page_extent.XMax:.1f}, "
+            f"YMin={page_extent.YMin:.1f}, YMax={page_extent.YMax:.1f}"
+        )
+        arcpy.AddMessage(
+            f"  Page {page_num} measure range from index extent: "
+            f"{page_start:.1f} to {page_end:.1f}"
+        )
+
         arcpy.AddMessage(
             f"  Page {page_num} measure range: {page_start:.1f} to {page_end:.1f}"
         )
 
-        # ── Step 4: Filter band records to this page ──────────────────────────
+        # Step 4: Filter band records to this page
         page_band_records = _filter_band_records_to_page(
             band_records, page_start, page_end
         )
         arcpy.AddMessage(
-            f"  Page {page_num} has {len(page_band_records)} visible band records."
+            f"  Page {page_num}: {len(page_band_records)} visible band records."
         )
 
-        # ── Step 5: Redraw stationing band for this page ──────────────────────
+        # Step 5: Redraw ticks and labels for this page
         try:
-            band_info = prepare_layout_band_records(
-                band_records=page_band_records,
-                band_left=band_geom["band_left"],
-                band_width=band_geom["band_width"],
-                point_row_y=band_geom["top_label_row1_y"],
-                line_row_y=band_geom["top_label_row1_y"],
-                route_start=page_start,
-                route_end=page_end,
-            )
-
-            row_ready_records = band_info["row_ready_records"]
-            point_records = [r for r in row_ready_records if r["type"] == "POINT"]
-            line_records = [r for r in row_ready_records if r["type"] == "LINE"]
-
-            # Remove points already covered by overlap labels
-            point_records = filter_point_records_for_labeling(
-                point_records, line_records
-            )
-
-            # Assign alternating rows to line overlap labels
-            line_records = assign_line_label_sides(
-                line_records,
-                top_y=band_geom["top_label_row1_y"],
-                bottom_y=band_geom["top_label_row3_y"],
-            )
-
-            # Clear old line labels and redraw for this page
-            clear_line_band_labels(layout)
-            draw_line_band_labels(
-                layout=layout,
-                line_records=line_records,
-                label_y=band_geom["top_label_row1_y"],
-                text_height=0.12,
-                font_name="Tahoma",
-                label_mode="source_name",
-            )
-
-        except Exception as e:
-            arcpy.AddWarning(
-                f"  Could not redraw stationing band for page {page_num}: {e}"
-            )
-
-        # ── Step 6: Redraw ticks and labels for this page ─────────────────────
-        try:
-            # Clear old ticks and labels
+            # Clear all ticks and labels from previous page
             clear_point_ticks_and_labels(layout)
 
-            if not point_event_features:
-                arcpy.AddMessage(
-                    f"  Page {page_num}: no point event features — skipping ticks."
+            # Build POINT records with layout XY for this page
+            page_point_records = []
+            if point_event_features:
+                page_point_records = build_point_records_with_layout_xy(
+                    point_event_features=point_event_features,
+                    map_frame=map_frame,
+                    route_start=page_start,
+                    route_end=page_end,
+                    band_left=band_geom["band_left"],
+                    band_width=band_geom["band_width"],
                 )
-                continue
+                # Filter to only points on this page by measure
+                page_point_records = [
+                    r
+                    for r in page_point_records
+                    if page_start <= r.get("meas", -1) <= page_end
+                ]
 
-            # Build point records with layout XY for this page
-            # Using page_start and page_end so band x positions are page-relative
-            page_point_records = build_point_records_with_layout_xy(
-                point_event_features=point_event_features,
-                map_frame=map_frame,
-                route_start=page_start,
-                route_end=page_end,
-                band_left=band_geom["band_left"],
-                band_width=band_geom["band_width"],
-            )
+            # Build LINE records with layout XY for this page
+            page_line_records = []
+            if line_event_features:
+                page_line_records = build_line_records_with_layout_xy(
+                    line_event_features=line_event_features,
+                    map_frame=map_frame,
+                    route_start=page_start,
+                    route_end=page_end,
+                    band_left=band_geom["band_left"],
+                    band_width=band_geom["band_width"],
+                )
+                # Filter to only overlaps that touch this page
+                page_line_records = [
+                    r
+                    for r in page_line_records
+                    if r.get("fmeas", -1) <= page_end
+                    and r.get("tmeas", -1) >= page_start
+                ]
 
-            # Filter to only points visible on this page by measure
+            # Remove POINT records whose source also has a LINE overlap
+            line_source_names = {r.get("source_name") for r in page_line_records}
             page_point_records = [
                 r
                 for r in page_point_records
-                if page_start <= r.get("meas", -1) <= page_end
+                if r.get("source_name") not in line_source_names
             ]
 
-            if not page_point_records:
-                arcpy.AddMessage(
-                    f"  Page {page_num}: no intersections visible — skipping ticks."
+            # Combine — points to top band, lines to bottom band
+            all_page_records = page_point_records + page_line_records
+
+            if all_page_records:
+                ticks = draw_point_ticks_and_labels(
+                    layout=layout,
+                    point_records=all_page_records,
+                    band_y_top=band_geom["top_band_bottom"],
+                    band_y_bottom=band_geom["bot_band_top"],
+                    label_top_row1_y=band_geom["top_label_row1_y"],
+                    label_top_row2_y=band_geom["top_label_row2_y"],
+                    label_top_row3_y=band_geom["top_label_row3_y"],
+                    label_top_row4_y=band_geom["top_label_row4_y"],
+                    label_bottom_row1_y=band_geom["bot_label_row1_y"],
+                    label_bottom_row2_y=band_geom["bot_label_row2_y"],
+                    label_bottom_row3_y=band_geom["bot_label_row3_y"],
+                    label_bottom_row4_y=band_geom["bot_label_row4_y"],
+                    half_tick=0.1,
+                    text_height=0.17,
+                    font_name="Tahoma",
                 )
-                continue
-
-            # Draw ticks and labels for this page
-            ticks = draw_point_ticks_and_labels(
-                layout=layout,
-                point_records=page_point_records,
-                band_y_top=band_geom["top_band_bottom"],
-                band_y_bottom=band_geom["bot_band_top"],
-                label_top_row1_y=band_geom["top_label_row1_y"],
-                label_top_row2_y=band_geom["top_label_row2_y"],
-                label_top_row3_y=band_geom["top_label_row3_y"],
-                label_bottom_y=band_geom["bot_label_bar5_y"],
-                half_tick=0.1,
-                text_height=0.17,
-                font_name="Tahoma",
-            )
-
-            arcpy.AddMessage(f"  Page {page_num}: drew {len(ticks)} ticks and labels.")
+                arcpy.AddMessage(
+                    f"  Page {page_num}: drew {len(ticks)} ticks and labels."
+                )
+            else:
+                arcpy.AddMessage(
+                    f"  Page {page_num}: no features visible — bands cleared."
+                )
 
         except Exception as e:
             arcpy.AddWarning(f"  Could not redraw ticks for page {page_num}: {e}")
 
+        # Step 6: Auto-populate text elements for this page
+        try:
+            auto_populate_layout(
+                layout=layout,
+                project=project,
+                width=width,
+                height=height,
+                input_line_fc=input_line_fc,
+                route_fc=route_fc,
+                route_start=page_start,  # page-specific start
+                route_end=page_end,  # page-specific end
+                band_records=page_band_records,  # filtered to this page
+                is_page_update=True,  # suppresses date, CRS, From/To
+            )
+        except Exception as e:
+            arcpy.AddWarning(f"  Could not auto-populate text for page {page_num}: {e}")
+
+        # Step 7: Export this page to individual PDF
+        if export_pdf and pdf_output_folder:
+            try:
+                # Sanitise page name for file system
+                page_pdf_path = os.path.join(
+                    pdf_output_folder, f"{layout_name}_Page_{page_num:02d}.pdf"
+                )
+                layout.exportToPDF(
+                    out_pdf=page_pdf_path,
+                    resolution=300,
+                    image_quality="BEST",
+                    jpeg_compression_quality=80,
+                )
+                arcpy.AddMessage(f"  Page {page_num}: exported to {page_pdf_path}")
+            except Exception as e:
+                arcpy.AddWarning(f"  Page {page_num}: could not export PDF: {e}")
+
+        # Export all pages merged into one PDF
+    if export_pdf and pdf_output_folder:
+        try:
+            merged_pdf_path = os.path.join(
+                pdf_output_folder, f"{layout_name}_All_Pages.pdf"
+            )
+            map_series.exportToPDF(
+                out_pdf=merged_pdf_path,
+                resolution=300,
+                image_quality="BEST",
+                jpeg_compression_quality=80,
+                show_selection_symbology=False,
+            )
+            arcpy.AddMessage(f"Merged PDF exported to: {merged_pdf_path}")
+        except Exception as e:
+            arcpy.AddWarning(f"Could not export merged PDF: {e}")
+
     arcpy.AddMessage("Map series page update complete.")
-    arcpy.AddMessage("You can now browse pages in the layout view and export manually.")
+    arcpy.AddMessage("Browse pages in the layout view and export manually when ready.")
