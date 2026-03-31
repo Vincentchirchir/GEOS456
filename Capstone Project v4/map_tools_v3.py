@@ -81,40 +81,41 @@ def add_output_to_current_map(outputs):
 
         # symbolize and label added point event / overlap endpoint layers
         for path, lyr in added_layers:
-            # try:
-            if not lyr or path in [route_fc, station_fc]:
-                continue
 
-            desc = arcpy.Describe(path)
-            shape_type = getattr(desc, "shapeType", None)
-            field_names = [f.name for f in arcpy.ListFields(path)]
+            try:
+                if not lyr or path in [route_fc, station_fc]:
+                    continue
 
-            sym = lyr.symbology
-            if hasattr(sym, "renderer") and sym.renderer.type == "SimpleRenderer":
-                if shape_type == "Point":
-                    sym.renderer.symbol.color = {"RGB": [230, 200, 255, 100]}
-                    sym.renderer.symbol.size = 5
-                elif shape_type == "Polyline":
-                    sym.renderer.symbol.color = {"RGB": [0, 150, 0, 100]}
-                    sym.renderer.symbol.width = 3
-                lyr.symbology = sym
+                desc = arcpy.Describe(path)
+                shape_type = getattr(desc, "shapeType", None)
+                field_names = [f.name for f in arcpy.ListFields(path)]
 
-        #     # label point layers that have Chainage
-        #     if shape_type == "Point" and "Chainage" in field_names:
-        #         lyr.showLabels = True
-        #         for lbl in lyr.listLabelClasses():
-        #             lbl.visible = True
-        #             lbl.expression = "$feature.Chainage"
+                sym = lyr.symbology
+                if hasattr(sym, "renderer") and sym.renderer.type == "SimpleRenderer":
+                    if shape_type == "Point":
+                        sym.renderer.symbol.color = {"RGB": [230, 200, 255, 100]}
+                        sym.renderer.symbol.size = 5
+                    elif shape_type == "Polyline":
+                        sym.renderer.symbol.color = {"RGB": [0, 150, 0, 100]}
+                        sym.renderer.symbol.width = 3
+                    lyr.symbology = sym
 
-        #     # label overlap lines if desired
-        #     elif shape_type == "Polyline" and "ChainageRange" in field_names:
-        #         lyr.showLabels = True
-        #         for lbl in lyr.listLabelClasses():
-        #             lbl.visible = True
-        #             lbl.expression = "$feature.ChainageRange"
+                #     # label point layers that have Chainage
+                if shape_type == "Point" and "Chainage" in field_names:
+                    lyr.showLabels = True
+                    for lbl in lyr.listLabelClasses():
+                        lbl.visible = True
+                        lbl.expression = "$feature.Chainage"
 
-        # except Exception as e:
-        #     arcpy.AddWarning(f"Could not symbolize or label {path}: {e}")
+                # label overlap lines if desired
+                elif shape_type == "Polyline" and "ChainageRange" in field_names:
+                    lyr.showLabels = True
+                    for lbl in lyr.listLabelClasses():
+                        lbl.visible = True
+                        lbl.expression = "$feature.ChainageRange"
+
+            except Exception as e:
+                arcpy.AddWarning(f"Could not symbolize or label {path}: {e}")
 
         # zoom to route extent
         if route_fc and arcpy.Exists(route_fc):
