@@ -2,7 +2,7 @@ import arcpy
 import os
 import sys
 import importlib
-import route_tools, stationing_tools, events_tools, map_tools  
+import route_tools, stationing_tools, events_tools, map_tools
 
 tool_folder = os.path.dirname(__file__)
 if tool_folder not in sys.path:
@@ -55,11 +55,11 @@ class GenerateStationing(object):
             displayName="Output Geodatabase",
             name="output_gdb",
             datatype="DEWorkspace",
-            parameterType="Required",
+            parameterType="Optional",
             direction="Input",
         )
 
-        # setting default gdb
+        # setting default gdb — only available in desktop, silently skipped on server
         try:
             output_gdb.value = arcpy.mp.ArcGISProject("CURRENT").defaultGeodatabase
         except:
@@ -109,6 +109,7 @@ class GenerateStationing(object):
             direction="Input",
         )
 
+        # Filter to polyline layers in active map — only available in desktop, silently skipped on server
         try:
             aprx = arcpy.mp.ArcGISProject("CURRENT")
             active_map = aprx.activeMap
@@ -132,7 +133,7 @@ class GenerateStationing(object):
 
         # Desriptions to tools that shows when you hover the parameter
         input_line.description = "Select the main polyline feature to station."
-        output_gdb.description = "Choose the output file geodatabase."
+        output_gdb.description = "Choose the output file geodatabase. Leave blank to write to the server scratch geodatabase (recommended for web tool use)."
         station_interval.description = (
             "Distance between station points. Example: 100 Meters."
         )
@@ -147,14 +148,35 @@ class GenerateStationing(object):
             "Optional layers to analyze for intersections and overlaps."
         )
 
+        # --- Enterprise-compatible output parameters ---
+        # Declaring these as Derived outputs lets web tool clients receive the
+        # result feature classes after the job completes on the server.
+        out_route_fc = arcpy.Parameter(
+            displayName="Output Route Feature Class",
+            name="out_route_fc",
+            datatype="DEFeatureClass",
+            parameterType="Derived",
+            direction="Output",
+        )
+
+        out_station_points = arcpy.Parameter(
+            displayName="Output Station Points",
+            name="out_station_points",
+            datatype="DEFeatureClass",
+            parameterType="Derived",
+            direction="Output",
+        )
+
         return [
-            input_line,  # 0
-            output_gdb,  # 1
-            station_interval,  # 2
-            start_measure,  # 3
-            end_measure,  # 4
-            tolerance,  # 5
+            input_line,       # 0
+            output_gdb,       # 1
+            station_interval, # 2
+            start_measure,    # 3
+            end_measure,      # 4
+            tolerance,        # 5
             analysis_layers,  # 6
+            out_route_fc,     # 7  (Derived output — Enterprise web tool)
+            out_station_points,  # 8  (Derived output — Enterprise web tool)
         ]
 
 
@@ -180,7 +202,9 @@ class GenerateStationing(object):
                     )
             except:
                 tolerance.setErrorMessage("Invalid tolerance value. Example: 1 Meters")
-        # warn if there is no active map
+
+        # Active map check — only warn if we can confirm we are in a desktop
+        # session with no active map. On server this block is silently skipped.
         try:
             aprx = arcpy.mp.ArcGISProject("CURRENT")
             if aprx.activeMap is None:
@@ -188,9 +212,8 @@ class GenerateStationing(object):
                     "No active map detected. You may need to browse to input layers manually."
                 )
         except:
-            input_line.setWarningMessage(
-                "Could not access the current ArcGIS Pro project. Browse to inputs manually if needed."
-            )
+            # Running on ArcGIS Server or outside a Pro session — no warning needed.
+            pass
 
         # Validate input route feature
         if input_line.value:
@@ -207,6 +230,8 @@ class GenerateStationing(object):
                 input_line.setErrorMessage(f"Invalid input feature: {e}")
 
         # validating output workspace as geodatabse
+        # When blank the tool falls back to arcpy.env.scratchGDB at runtime,
+        # so an empty value is valid (web tool clients will leave this blank).
         if output_gdb.value:
             try:
                 out_path = output_gdb.valueAsText
@@ -343,7 +368,7 @@ class GenerateStationing(object):
         arcpy.env.overwriteOutput = True
 
         input_line_fc = parameters[0].valueAsText
-        output_gdb = parameters[1].valueAsText
+        output_gdb = parameters[1].valueAsText or arcpy.env.scratchGDB
         station_interval = parameters[2].valueAsText
 
         start_measure = 0
@@ -361,12 +386,6 @@ class GenerateStationing(object):
         analysis_layers = []
         if parameters[6].valueAsText:
             analysis_layers = parameters[6].valueAsText.split(";")
-
-        # create_layout = bool(parameters[7].value)
-        # layout_name = parameters[8].valueAsText
-        # layout_size = parameters[9].valueAsText
-        # main_map_name = parameters[10].valueAsText
-        # mini_map_name = parameters[11].valueAsText
 
         messages.addMessage("Creating route and stationing...")
 
@@ -423,4 +442,10 @@ class GenerateStationing(object):
         else:
             messages.addMessage("No intersecting or overlapping features provided.")
 
+        # --- Set Derived output parameter values for Enterprise web tool clients ---
+        parameters[7].value = outputs["route_fc"]
+        parameters[8].value = outputs["station_points"]
+
+        # Add outputs to map when running in ArcGIS Pro desktop — silently
+        # skipped on ArcGIS Server where arcpy.mp is not available.
         add_output_to_current_map(outputs)
