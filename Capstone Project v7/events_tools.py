@@ -12,6 +12,16 @@ def get_first_word(name):
     return name[:10]
 
 
+def build_unique_layer_name(raw_name, idx, output_gdb):
+    """Create a stable unique output name for each analysis layer."""
+    safe_base = "".join(c if c.isalnum() else "_" for c in raw_name).strip("_")
+    if not safe_base:
+        safe_base = f"layer_{idx}"
+
+    safe_base = safe_base[:40]
+    return arcpy.ValidateTableName(f"{safe_base}_{idx}", output_gdb)
+
+
 # The following function is checking other features against the main route and create point intersection and line overlap
 # Point intersection is where the route meets another feature.
 # Overlaps is where the route shares the same path with another line or passes through a polygon
@@ -47,11 +57,7 @@ def create_intersections_and_overlaps(
                     parts.pop()
                 raw_name = parts[-1] if parts else f"layer_{idx}"
 
-            first_word = get_first_word(raw_name)
-            safe_name = "".join(c if c.isalnum() else "_" for c in first_word)[:15]
-            layer_name = arcpy.ValidateTableName(
-                safe_name or f"layer_{idx}", output_gdb
-            )
+            layer_name = build_unique_layer_name(raw_name, idx, output_gdb)
 
             if (
                 layer_name.lower() == route_name.lower()
@@ -59,6 +65,8 @@ def create_intersections_and_overlaps(
                 continue  # skips coz intersecting a route with itself would not make sense
 
             point_out = os.path.join(output_gdb, f"{layer_name}_intersect")
+            if arcpy.Exists(point_out):
+                arcpy.management.Delete(point_out)
             arcpy.analysis.Intersect([route_fc, layer], point_out, output_type="POINT")
 
             # check whether the output above has features
@@ -74,6 +82,8 @@ def create_intersections_and_overlaps(
                 temp_layer_ov = f"{layer_name}_temp_ov_lyr"
                 arcpy.management.MakeFeatureLayer(layer, temp_layer_ov)
                 overlap_out = os.path.join(output_gdb, f"{layer_name}_overlap")
+                if arcpy.Exists(overlap_out):
+                    arcpy.management.Delete(overlap_out)
                 arcpy.analysis.Intersect(
                     [route_fc, temp_layer_ov], overlap_out, output_type="LINE"
                 )
@@ -111,6 +121,10 @@ def locate_intersections_and_overlaps(
     line_event_tables = []
 
     for point_fc in point_intersections:
+        if not point_fc or not arcpy.Exists(point_fc):
+            arcpy.AddWarning(f"Skipping missing intersection feature: {point_fc}")
+            continue
+
         point_name = arcpy.ValidateTableName(
             os.path.splitext(os.path.basename(point_fc))[0], out_gdb
         )
@@ -133,6 +147,10 @@ def locate_intersections_and_overlaps(
             arcpy.management.Delete(out_table)
 
     for overlap_fc in line_overlaps:
+        if not overlap_fc or not arcpy.Exists(overlap_fc):
+            arcpy.AddWarning(f"Skipping missing overlap feature: {overlap_fc}")
+            continue
+
         overlap_name = arcpy.ValidateTableName(
             os.path.splitext(os.path.basename(overlap_fc))[0], out_gdb
         )

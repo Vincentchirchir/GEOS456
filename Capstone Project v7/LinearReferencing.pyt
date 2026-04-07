@@ -1,12 +1,153 @@
 import arcpy
+import importlib
 import os
 import sys
+import urllib.parse
+import urllib.request
+import ssl
 
 tool_folder = os.path.dirname(__file__)
 if tool_folder not in sys.path:
     sys.path.append(tool_folder)
 
-from workflow import run_stationing_workflow
+import route_tools
+import stationing_tools
+import events_tools
+import map_tools
+import workflow
+
+for module in (route_tools, stationing_tools, events_tools, map_tools, workflow):
+    importlib.reload(module)
+
+run_stationing_workflow = workflow.run_stationing_workflow
+
+
+def fetch_url_to_local(url, output_fc):
+    """Download a feature service layer URL to a local feature class."""
+    import json
+
+    if arcpy.Exists(output_fc):
+        arcpy.management.Delete(output_fc)
+
+    try:
+        arcpy.management.CopyFeatures(url, output_fc)
+        return output_fc
+    except Exception:
+        pass
+
+    params = {"where": "1=1", "outFields": "*", "returnGeometry": "true", "f": "json"}
+
+    try:
+        token_info = arcpy.GetSigninToken()
+    except Exception:
+        token_info = None
+
+    if token_info and token_info.get("token"):
+        params["token"] = token_info["token"]
+
+    query_url = url.rstrip("/") + "/query?" + urllib.parse.urlencode(params)
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    with urllib.request.urlopen(query_url, timeout=60, context=ctx) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+
+    if "error" in data:
+        raise RuntimeError(f"Feature service error: {data['error']}")
+
+    geom_type = {
+        "esriGeometryPoint": "POINT",
+        "esriGeometryPolyline": "POLYLINE",
+        "esriGeometryPolygon": "POLYGON",
+    }.get(data.get("geometryType"), "POLYLINE")
+
+    wkid = data.get("spatialReference", {}).get("wkid", 4326)
+    sr = arcpy.SpatialReference(wkid)
+
+    arcpy.management.CreateFeatureclass(
+        os.path.dirname(output_fc),
+        os.path.basename(output_fc),
+        geom_type,
+        spatial_reference=sr,
+    )
+
+    skip_types = {"esriFieldTypeOID", "esriFieldTypeGeometry"}
+    field_type_map = {
+        "esriFieldTypeString": ("TEXT", 255),
+        "esriFieldTypeInteger": ("LONG", None),
+        "esriFieldTypeSmallInteger": ("SHORT", None),
+        "esriFieldTypeDouble": ("DOUBLE", None),
+        "esriFieldTypeSingle": ("FLOAT", None),
+        "esriFieldTypeDate": ("DATE", None),
+    }
+
+    add_fields = []
+    for field_info in data.get("fields", []):
+        if field_info["type"] in skip_types:
+            continue
+        arcpy_type, length = field_type_map.get(field_info["type"], ("TEXT", 255))
+        kwargs = {"field_length": length} if length else {}
+        arcpy.management.AddField(output_fc, field_info["name"], arcpy_type, **kwargs)
+        add_fields.append(field_info["name"])
+
+    with arcpy.da.InsertCursor(output_fc, ["SHAPE@JSON"] + add_fields) as cur:
+        for feature in data.get("features", []):
+            geometry = json.dumps(feature.get("geometry") or {})
+            attributes = [feature["attributes"].get(name) for name in add_fields]
+            cur.insertRow([geometry] + attributes)
+
+    return output_fc
+
+
+def localize_layer_input(layer_value, output_fc, label, messages):
+    """Convert remote layer URLs to local scratch feature classes for server use."""
+    if layer_value and layer_value.startswith("http"):
+        local_fc = fetch_url_to_local(layer_value, output_fc)
+        messages.addMessage(f"{label} downloaded from URL to scratch.")
+        return local_fc
+    return layer_value
+
+
+def copy_input_to_scratch(raw_value, raw_text, output_fc, label, messages):
+    """Normalize web-tool feature inputs into scratch feature classes."""
+    if arcpy.Exists(output_fc):
+        arcpy.management.Delete(output_fc)
+
+    source_value = raw_value if raw_value not in (None, "") else raw_text
+    if source_value in (None, ""):
+        return None
+
+    try:
+        arcpy.management.CopyFeatures(source_value, output_fc)
+        messages.addMessage(f"{label} copied to scratch.")
+        return output_fc
+    except Exception:
+        pass
+
+    if raw_text and raw_text.startswith("http"):
+        return localize_layer_input(raw_text, output_fc, label, messages)
+
+    return raw_text
+
+
+def get_multivalue_inputs(parameter):
+    """Return multivalue GP inputs as (raw_value, raw_text) pairs."""
+    values = getattr(parameter, "values", None)
+    if values:
+        pairs = []
+        for value in values:
+            text = getattr(value, "valueAsText", None)
+            if not text:
+                text = str(value)
+            pairs.append((value, text))
+        return pairs
+
+    text = parameter.valueAsText
+    if not text:
+        return []
+
+    return [(None, part) for part in text.split(";") if part]
 
 
 class Toolbox(object):
@@ -25,7 +166,7 @@ class GenerateStationing(object):
         input_line = arcpy.Parameter(
             displayName="Input Linear Feature",
             name="input_line",
-            datatype="GPFeatureLayer",
+            datatype="GPFeatureRecordSetLayer",
             parameterType="Required",
             direction="Input",
         )
@@ -67,7 +208,7 @@ class GenerateStationing(object):
         analysis_layers = arcpy.Parameter(
             displayName="Overlapping or Intersecting Features",
             name="analysis_layers",
-            datatype="GPFeatureLayer",
+            datatype="GPFeatureRecordSetLayer",
             parameterType="Optional",
             direction="Input",
         )
@@ -76,7 +217,7 @@ class GenerateStationing(object):
         out_route = arcpy.Parameter(
             displayName="Output Route",
             name="out_route",
-            datatype="GPFeatureLayer",
+            datatype="DEFeatureClass",
             parameterType="Derived",
             direction="Output",
         )
@@ -84,7 +225,7 @@ class GenerateStationing(object):
         out_stations = arcpy.Parameter(
             displayName="Output Station Points",
             name="out_stations",
-            datatype="GPFeatureLayer",
+            datatype="DEFeatureClass",
             parameterType="Derived",
             direction="Output",
         )
@@ -92,7 +233,7 @@ class GenerateStationing(object):
         out_intersections = arcpy.Parameter(
             displayName="Output Intersections",
             name="out_intersections",
-            datatype="GPFeatureLayer",
+            datatype="DEFeatureClass",
             parameterType="Derived",
             direction="Output",
         )
@@ -100,7 +241,7 @@ class GenerateStationing(object):
         out_overlaps = arcpy.Parameter(
             displayName="Output Overlaps",
             name="out_overlaps",
-            datatype="GPFeatureLayer",
+            datatype="DEFeatureClass",
             parameterType="Derived",
             direction="Output",
         )
@@ -108,7 +249,7 @@ class GenerateStationing(object):
         out_segment = arcpy.Parameter(
             displayName="Output Segment",
             name="out_segment",
-            datatype="GPFeatureLayer",
+            datatype="DEFeatureClass",
             parameterType="Derived",
             direction="Output",
         )
@@ -229,7 +370,15 @@ class GenerateStationing(object):
         arcpy.env.workspace = arcpy.env.scratchGDB
         arcpy.env.scratchWorkspace = arcpy.env.scratchGDB
 
-        input_line_fc = parameters[0].valueAsText
+        scratch = arcpy.env.scratchGDB
+
+        input_line_fc = copy_input_to_scratch(
+            parameters[0].value,
+            parameters[0].valueAsText,
+            scratch + "\\input_line_local",
+            "Input feature",
+            messages,
+        )
 
         try:
             arcpy.env.outputCoordinateSystem = arcpy.Describe(
@@ -237,6 +386,7 @@ class GenerateStationing(object):
             ).spatialReference
         except Exception:
             pass
+
         station_interval = parameters[1].valueAsText
 
         start_measure = 0
@@ -251,9 +401,20 @@ class GenerateStationing(object):
         if parameters[4].valueAsText:
             tolerance = parameters[4].valueAsText
 
-        analysis_layers = []
-        if parameters[5].valueAsText:
-            analysis_layers = parameters[5].valueAsText.split(";")
+        localized_layers = []
+        for index, (raw_value, raw_text) in enumerate(
+            get_multivalue_inputs(parameters[5])
+        ):
+            localized_fc = copy_input_to_scratch(
+                raw_value,
+                raw_text,
+                scratch + f"\\analysis_layer_{index}_local",
+                f"Analysis layer {index}",
+                messages,
+            )
+            if localized_fc:
+                localized_layers.append(localized_fc)
+        analysis_layers = localized_layers
 
         messages.addMessage(f"Input feature: {input_line_fc}")
         messages.addMessage(f"Station interval: {station_interval}")
@@ -261,7 +422,7 @@ class GenerateStationing(object):
         messages.addMessage(f"End measure: {end_measure}")
         messages.addMessage(f"Tolerance: {tolerance}")
         messages.addMessage(f"Analysis layers: {analysis_layers}")
-        messages.addMessage(f"Scratch GDB: {arcpy.env.scratchGDB}")
+        messages.addMessage(f"Scratch GDB: {scratch}")
 
         outputs = run_stationing_workflow(
             input_line_fc=input_line_fc,
@@ -279,21 +440,37 @@ class GenerateStationing(object):
         arcpy.SetParameter(6, outputs.route)
         arcpy.SetParameter(7, outputs.stations)
 
-        scratch = arcpy.env.scratchGDB
+        intersection_output = getattr(outputs, "intersection_output", None)
+        if (
+            not intersection_output
+            and hasattr(outputs, "intersections")
+            and outputs.intersections
+        ):
+            intersection_output = outputs.intersections[0]
 
-        if hasattr(outputs, "intersections") and outputs.intersections:
-            messages.addMessage(f"Intersections created: {len(outputs.intersections)} layer(s)")
-            arcpy.SetParameter(8, outputs.intersections[0])
+        if intersection_output:
+            messages.addMessage(
+                f"Intersections created: {len(outputs.intersections)} layer(s)"
+            )
+            arcpy.SetParameter(8, intersection_output)
         else:
             empty_pts = scratch + "\\empty_intersections"
+            if arcpy.Exists(empty_pts):
+                arcpy.management.Delete(empty_pts)
             arcpy.management.CreateFeatureclass(scratch, "empty_intersections", "POINT")
             arcpy.SetParameter(8, empty_pts)
 
-        if hasattr(outputs, "overlaps") and outputs.overlaps:
+        overlap_output = getattr(outputs, "overlap_output", None)
+        if not overlap_output and hasattr(outputs, "overlaps") and outputs.overlaps:
+            overlap_output = outputs.overlaps[0]
+
+        if overlap_output:
             messages.addMessage(f"Overlaps created: {len(outputs.overlaps)} layer(s)")
-            arcpy.SetParameter(9, outputs.overlaps[0])
+            arcpy.SetParameter(9, overlap_output)
         else:
             empty_lines = scratch + "\\empty_overlaps"
+            if arcpy.Exists(empty_lines):
+                arcpy.management.Delete(empty_lines)
             arcpy.management.CreateFeatureclass(scratch, "empty_overlaps", "POLYLINE")
             arcpy.SetParameter(9, empty_lines)
 
