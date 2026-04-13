@@ -1,5 +1,6 @@
 import arcpy
 from types import SimpleNamespace
+from datetime import datetime
 
 from stationing_tools import create_route_stationing, join_station_chainage_to_points
 from events_tools import (
@@ -9,6 +10,8 @@ from events_tools import (
     make_event_layers_from_tables,
 )
 from map_tools import add_output_to_current_map
+from output_fields import build_run_id, clean_display_name
+from publish_tools import publish_result_layers
 
 
 def merge_feature_outputs(feature_classes, output_fc):
@@ -34,9 +37,17 @@ def run_stationing_workflow(
     start_measure,
     end_measure,
     analysis_layers,
-    messages,
+    layer_names=None,
+    input_route_name=None,
+    publish_mode=None,
+    station_target=None,
+    intersection_target=None,
+    overlap_target=None,
+    messages=None,
 ):
     scratch = arcpy.env.scratchGDB
+    created_on = datetime.now()
+    run_id = build_run_id(created_on)
 
     result = create_route_stationing(
         input_line_fc=input_line_fc,
@@ -48,10 +59,18 @@ def run_stationing_workflow(
     )
 
     messages.addMessage("Route created successfully.")
+    messages.addMessage(f"Run ID: {run_id}")
+
+    route_name = clean_display_name(input_route_name, fallback=result.route_name) or "Input Route"
 
     join_station_chainage_to_points(
         station_points=result.stations,
         station_table=result.table,
+        route_id_field=result.id_field,
+        route_id_value=result.id_value,
+        route_name=route_name,
+        run_id=run_id,
+        created_on=created_on,
     )
     messages.addMessage("Station points generated.")
     messages.addMessage("Chainage joined to station points.")
@@ -66,6 +85,7 @@ def run_stationing_workflow(
             route_fc=result.route,
             output_gdb=scratch,
             analysis_layers=analysis_layers,
+            layer_names=layer_names,
         )
 
         events = locate_intersections_and_overlaps(
@@ -85,6 +105,10 @@ def run_stationing_workflow(
         event_features = make_event_layers_from_tables(
             route_fc=result.route,
             route_id_field=result.id_field,
+            route_id_value=result.id_value,
+            route_name=route_name,
+            run_id=run_id,
+            created_on=created_on,
             output_gdb=scratch,
             point_event_tables=events.pts,
             line_event_tables=events.lines,
@@ -115,7 +139,22 @@ def run_stationing_workflow(
         overlaps=line_features,
         intersection_output=merged_intersections,
         overlap_output=merged_overlaps,
+        run_id=run_id,
+        created_on=created_on,
     )
+
+    published_targets = publish_result_layers(
+        outputs=result_ns,
+        publish_mode=publish_mode,
+        station_target=station_target,
+        intersection_target=intersection_target,
+        overlap_target=overlap_target,
+        route_id_field=result.id_field,
+        messages=messages,
+    )
+    result_ns.published_stations = published_targets.stations
+    result_ns.published_intersections = published_targets.intersections
+    result_ns.published_overlaps = published_targets.overlaps
 
     add_output_to_current_map(result_ns)
 

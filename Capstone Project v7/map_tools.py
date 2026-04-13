@@ -1,6 +1,18 @@
 import arcpy
 
 
+def apply_layer_labels(layer, feature_class, candidate_fields):
+    field_names = [f.name for f in arcpy.ListFields(feature_class)]
+    label_field = next((name for name in candidate_fields if name in field_names), None)
+    if not label_field:
+        return
+
+    layer.showLabels = True
+    for lbl in layer.listLabelClasses():
+        lbl.visible = True
+        lbl.expression = f"$feature.{label_field}"
+
+
 def add_output_to_current_map(outputs):
     # This function adds results to the active ArcGIS Pro map and applies
     # symbology, zoom, and labels. It is desktop-only behaviour.
@@ -59,11 +71,7 @@ def add_output_to_current_map(outputs):
             station_sym.renderer.symbol.size = 6
             station_layer.symbology = station_sym
 
-        # Label station points with Chainage
-        station_layer.showLabels = True
-        for lbl in station_layer.listLabelClasses():
-            lbl.visible = True
-            lbl.expression = "$feature.Chainage"
+        apply_layer_labels(station_layer, station_fc, ["Label_Text", "LabelText", "Chainage"])
 
         # Add segment line (trimmed route when start/end measure is set)
         segment_fc = getattr(outputs, "segment", None)
@@ -94,6 +102,7 @@ def add_output_to_current_map(outputs):
                         sym.renderer.symbol.color = {"RGB": [255, 165, 0, 100]}
                         sym.renderer.symbol.size = 8
                         lyr.symbology = sym
+                    apply_layer_labels(lyr, fc, ["Label_Text", "LabelText", "Chainage"])
             except Exception as e:
                 arcpy.AddWarning(f"Could not add intersection layer: {e}")
 
@@ -110,6 +119,7 @@ def add_output_to_current_map(outputs):
                         sym.renderer.symbol.color = {"RGB": [128, 0, 128, 100]}
                         sym.renderer.symbol.width = 3
                         lyr.symbology = sym
+                    apply_layer_labels(lyr, fc, ["Label_Text", "Range_Text", "ChainageRange"])
             except Exception as e:
                 arcpy.AddWarning(f"Could not add overlap layer: {e}")
 

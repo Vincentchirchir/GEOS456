@@ -1,6 +1,8 @@
 import arcpy
 import importlib
+import json
 import os
+import re
 import sys
 import urllib.parse
 import urllib.request
@@ -14,18 +16,284 @@ import route_tools
 import stationing_tools
 import events_tools
 import map_tools
+import output_fields
+import publish_tools
 import workflow
 
-for module in (route_tools, stationing_tools, events_tools, map_tools, workflow):
+for module in (
+    output_fields,
+    publish_tools,
+    route_tools,
+    stationing_tools,
+    events_tools,
+    map_tools,
+    workflow,
+):
     importlib.reload(module)
 
 run_stationing_workflow = workflow.run_stationing_workflow
 
 
+def is_placeholder_layer_name(name):
+    return not output_fields.is_meaningful_display_name(name)
+
+
+def normalize_layer_name_candidate(value):
+    if value in (None, ""):
+        return None
+
+    text = str(value).strip().strip('"').strip("'")
+    if not text or text.startswith("<"):
+        return None
+
+    if text.startswith("http"):
+        return get_service_layer_name(text)
+
+    if text.lstrip().startswith("{") or text.lstrip().startswith("["):
+        return None
+
+    # Keep plain layer titles exactly as ArcGIS provides them.
+    # Only collapse file-system-like paths down to their basename.
+    if "\\" in text or "/" in text:
+        text = os.path.basename(text.rstrip("/\\")) or text
+
+    # Remove only common file extensions, not arbitrary suffixes.
+    lowered = text.lower()
+    for extension in (".shp", ".geojson", ".json", ".kml", ".kmz", ".csv", ".zip"):
+        if lowered.endswith(extension):
+            text = text[: -len(extension)]
+            break
+
+    text = text.strip()
+    return text or None
+
+
+def choose_best_layer_name(candidates, fallback_name=None):
+    unique_candidates = []
+    seen = set()
+
+    for value in candidates:
+        candidate = normalize_layer_name_candidate(value)
+        if not candidate or is_placeholder_layer_name(candidate):
+            continue
+
+        key = candidate.casefold()
+        if key in seen:
+            continue
+
+        seen.add(key)
+        unique_candidates.append(candidate)
+
+    if not unique_candidates:
+        return fallback_name
+
+    # Prefer the most descriptive visible name rather than shortened internal names.
+    unique_candidates.sort(
+        key=lambda name: (
+            len(name.replace("_", "").replace(" ", "")),
+            len(name),
+            name,
+        ),
+        reverse=True,
+    )
+    return unique_candidates[0]
+
+
+def collect_layer_name_candidates_from_json(payload, candidates=None):
+    candidates = candidates or []
+
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            key_text = str(key).lower()
+            if "url" in key_text and isinstance(value, str):
+                candidates.append(get_service_layer_name(value))
+
+            if any(token in key_text for token in ("name", "title", "label", "alias")):
+                candidates.append(value)
+
+            if key in {"fields", "features", "geometry", "attributes"}:
+                continue
+            if isinstance(value, (dict, list)):
+                collect_layer_name_candidates_from_json(value, candidates)
+
+    elif isinstance(payload, list):
+        for item in payload:
+            collect_layer_name_candidates_from_json(item, candidates)
+
+    return candidates
+
+
+def extract_layer_name_from_json(text):
+    if text in (None, ""):
+        return None
+
+    raw_text = str(text).strip()
+    if not raw_text or raw_text[0] not in "{[":
+        return None
+
+    try:
+        payload = json.loads(raw_text)
+    except Exception:
+        return None
+
+    candidates = collect_layer_name_candidates_from_json(payload)
+    return choose_best_layer_name(candidates)
+
+
+def describe_layer_name(source):
+    if source in (None, ""):
+        return None
+
+    try:
+        desc = arcpy.Describe(source)
+    except Exception:
+        return None
+
+    for attr in (
+        "nameString",
+        "name",
+        "baseName",
+        "aliasName",
+        "datasetName",
+        "catalogPath",
+    ):
+        candidate = normalize_layer_name_candidate(getattr(desc, attr, None))
+        if candidate and not is_placeholder_layer_name(candidate):
+            return candidate
+
+    return None
+
+
+def collect_object_metadata_candidates(
+    source,
+    candidate_urls=None,
+    candidate_json=None,
+    candidate_names=None,
+):
+    candidate_urls = candidate_urls if candidate_urls is not None else []
+    candidate_json = candidate_json if candidate_json is not None else []
+    candidate_names = candidate_names if candidate_names is not None else []
+
+    if source in (None, ""):
+        return candidate_urls, candidate_json, candidate_names
+
+    try:
+        attr_names = dir(source)
+    except Exception:
+        return candidate_urls, candidate_json, candidate_names
+
+    for attr in attr_names:
+        if attr.startswith("_"):
+            continue
+
+        attr_lower = attr.lower()
+        if not any(
+            token in attr_lower
+            for token in ("name", "title", "label", "alias", "url", "json", "layer")
+        ):
+            continue
+
+        try:
+            value = getattr(source, attr)
+        except Exception:
+            continue
+
+        if callable(value) or value in (None, ""):
+            continue
+
+        if isinstance(value, (dict, list, tuple, set)):
+            try:
+                text = json.dumps(value)
+            except Exception:
+                continue
+        else:
+            text = str(value).strip()
+
+        if not text:
+            continue
+
+        if ("json" in attr_lower or text[:1] in "{[") and text[:1] in "{[":
+            candidate_json.append(text)
+        elif "url" in attr_lower or (
+            text.startswith("http")
+            and any(
+                token in text for token in ("FeatureServer", "MapServer", "GPServer")
+            )
+        ):
+            candidate_urls.append(text)
+        elif any(token in attr_lower for token in ("name", "title", "label", "alias")):
+            candidate_names.append(text)
+
+    return candidate_urls, candidate_json, candidate_names
+
+
+def resolve_layer_name(raw_value, raw_text, localized_fc, fallback_name=None):
+    candidate_urls = []
+    candidate_json = []
+    candidate_names = []
+    candidate_attr_names = []
+    all_candidates = []
+
+    raw_text_value = str(raw_text or "").strip()
+    if raw_text_value:
+        if raw_text_value.startswith("http"):
+            candidate_urls.append(raw_text_value)
+        candidate_json.append(raw_text_value)
+        candidate_names.append(raw_text_value)
+
+    for attr in ("url", "serviceURL", "serviceUrl", "layerUrl"):
+        value = getattr(raw_value, attr, None)
+        if value:
+            candidate_urls.append(value)
+
+    raw_json = getattr(raw_value, "JSON", None)
+    if raw_json:
+        candidate_json.append(raw_json)
+
+    for attr in (
+        "displayName",
+        "title",
+        "label",
+        "name",
+        "longName",
+        "serviceLayerName",
+        "sourceLayerName",
+        "dataSourceName",
+    ):
+        value = getattr(raw_value, attr, None)
+        if value not in (None, ""):
+            candidate_attr_names.append(value)
+
+    collect_object_metadata_candidates(
+        raw_value,
+        candidate_urls=candidate_urls,
+        candidate_json=candidate_json,
+        candidate_names=candidate_attr_names,
+    )
+
+    for source in candidate_json:
+        candidate = extract_layer_name_from_json(source)
+        if candidate:
+            all_candidates.append(candidate)
+
+    for url in candidate_urls:
+        all_candidates.append(get_service_layer_name(url))
+
+    for source in candidate_attr_names:
+        all_candidates.append(source)
+
+    for source in candidate_names:
+        all_candidates.append(source)
+
+    for source in (raw_value, raw_text, localized_fc):
+        all_candidates.append(describe_layer_name(source))
+
+    best_name = choose_best_layer_name(all_candidates, fallback_name=fallback_name)
+    return output_fields.clean_display_name(best_name, fallback=fallback_name)
+
+
 def fetch_url_to_local(url, output_fc):
     """Download a feature service layer URL to a local feature class."""
-    import json
-
     if arcpy.Exists(output_fc):
         arcpy.management.Delete(output_fc)
 
@@ -98,6 +366,29 @@ def fetch_url_to_local(url, output_fc):
             cur.insertRow([geometry] + attributes)
 
     return output_fc
+
+
+def get_service_layer_name(url):
+    """Query a FeatureServer sublayer URL to get its real name."""
+    try:
+        import json
+
+        query_url = url.rstrip("/") + "?f=json"
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        token_info = None
+        try:
+            token_info = arcpy.GetSigninToken()
+        except Exception:
+            pass
+        if token_info and token_info.get("token"):
+            query_url += "&token=" + token_info["token"]
+        with urllib.request.urlopen(query_url, timeout=15, context=ctx) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return data.get("name") or data.get("displayField") or None
+    except Exception:
+        return None
 
 
 def localize_layer_input(layer_value, output_fc, label, messages):
@@ -214,6 +505,43 @@ class GenerateStationing(object):
         )
         analysis_layers.multiValue = True
 
+        publish_mode = arcpy.Parameter(
+            displayName="Existing Layer Update Mode",
+            name="publish_mode",
+            datatype="GPString",
+            parameterType="Optional",
+            direction="Input",
+        )
+        publish_mode.filter.list = ["Replace", "Append"]
+        publish_mode.value = "Replace"
+
+        stations_target = arcpy.Parameter(
+            displayName="Existing Stations Layer URL or Path",
+            name="stations_target",
+            datatype="GPString",
+            parameterType="Optional",
+            direction="Input",
+        )
+        stations_target.value = "https://services.arcgis.com/xYjDUN35YwdCEcMm/arcgis/rest/services/Stationing_Output/FeatureServer/1"
+
+        intersections_target = arcpy.Parameter(
+            displayName="Existing Intersections Layer URL or Path",
+            name="intersections_target",
+            datatype="GPString",
+            parameterType="Optional",
+            direction="Input",
+        )
+        intersections_target.value = "https://services.arcgis.com/xYjDUN35YwdCEcMm/arcgis/rest/services/Stationing_Output/FeatureServer/0"
+
+        overlaps_target = arcpy.Parameter(
+            displayName="Existing Overlaps Layer URL or Path",
+            name="overlaps_target",
+            datatype="GPString",
+            parameterType="Optional",
+            direction="Input",
+        )
+        overlaps_target.value = "https://services.arcgis.com/xYjDUN35YwdCEcMm/arcgis/rest/services/Stationing_Output/FeatureServer/2"
+
         out_route = arcpy.Parameter(
             displayName="Output Route",
             name="out_route",
@@ -268,6 +596,12 @@ class GenerateStationing(object):
         analysis_layers.description = (
             "Optional layers to analyze for intersections and overlaps."
         )
+        publish_mode.description = (
+            "Optional update mode for existing preconfigured output layers."
+        )
+        stations_target.description = "Optional hosted feature layer URL or catalog path for labeled station outputs."
+        intersections_target.description = "Optional hosted feature layer URL or catalog path for labeled intersection outputs."
+        overlaps_target.description = "Optional hosted feature layer URL or catalog path for labeled overlap outputs."
 
         return [
             input_line,  # 0
@@ -276,11 +610,15 @@ class GenerateStationing(object):
             end_measure,  # 3
             tolerance,  # 4
             analysis_layers,  # 5
-            out_route,  # 6
-            out_stations,  # 7
-            out_intersections,  # 8
-            out_overlaps,  # 9
-            out_segment,  # 10
+            publish_mode,  # 6
+            stations_target,  # 7
+            intersections_target,  # 8
+            overlaps_target,  # 9
+            out_route,  # 10
+            out_stations,  # 11
+            out_intersections,  # 12
+            out_overlaps,  # 13
+            out_segment,  # 14
         ]
 
     def updateMessages(self, parameters):
@@ -290,6 +628,10 @@ class GenerateStationing(object):
         end_measure = parameters[3]
         tolerance = parameters[4]
         analysis_layers = parameters[5]
+        publish_mode = parameters[6]
+        stations_target = parameters[7]
+        intersections_target = parameters[8]
+        overlaps_target = parameters[9]
 
         if tolerance.value:
             try:
@@ -365,6 +707,16 @@ class GenerateStationing(object):
             except Exception:
                 pass
 
+        target_values = [
+            stations_target.valueAsText,
+            intersections_target.valueAsText,
+            overlaps_target.valueAsText,
+        ]
+        if any(target_values) and not publish_mode.valueAsText:
+            publish_mode.setErrorMessage(
+                "Choose Replace or Append when target layers are provided."
+            )
+
     def execute(self, parameters, messages):
         arcpy.env.overwriteOutput = True
         arcpy.env.workspace = arcpy.env.scratchGDB
@@ -372,12 +724,24 @@ class GenerateStationing(object):
 
         scratch = arcpy.env.scratchGDB
 
+        input_raw_text = str(parameters[0].valueAsText or "")
+
         input_line_fc = copy_input_to_scratch(
             parameters[0].value,
             parameters[0].valueAsText,
             scratch + "\\input_line_local",
             "Input feature",
             messages,
+        )
+
+        input_route_name = (
+            resolve_layer_name(
+                raw_value=parameters[0].value,
+                raw_text=input_raw_text,
+                localized_fc=input_line_fc,
+                fallback_name="Input Route",
+            )
+            or "Input Route"
         )
 
         try:
@@ -402,6 +766,7 @@ class GenerateStationing(object):
             tolerance = parameters[4].valueAsText
 
         localized_layers = []
+        original_layer_names = []
         for index, (raw_value, raw_text) in enumerate(
             get_multivalue_inputs(parameters[5])
         ):
@@ -414,14 +779,37 @@ class GenerateStationing(object):
             )
             if localized_fc:
                 localized_layers.append(localized_fc)
+                original_name = (
+                    resolve_layer_name(
+                        raw_value=raw_value,
+                        raw_text=raw_text,
+                        localized_fc=localized_fc,
+                        fallback_name=f"Analysis Layer {index + 1}",
+                    )
+                    or f"Analysis Layer {index + 1}"
+                )
+                original_layer_names.append(original_name)
+                messages.addMessage(
+                    f"Resolved analysis layer {index + 1} name: {original_name}"
+                )
         analysis_layers = localized_layers
 
+        publish_mode = parameters[6].valueAsText or "Replace"
+        stations_target = parameters[7].valueAsText
+        intersections_target = parameters[8].valueAsText
+        overlaps_target = parameters[9].valueAsText
+
         messages.addMessage(f"Input feature: {input_line_fc}")
+        messages.addMessage(f"Resolved input route name: {input_route_name}")
         messages.addMessage(f"Station interval: {station_interval}")
         messages.addMessage(f"Start measure: {start_measure}")
         messages.addMessage(f"End measure: {end_measure}")
         messages.addMessage(f"Tolerance: {tolerance}")
         messages.addMessage(f"Analysis layers: {analysis_layers}")
+        messages.addMessage(f"Publish mode: {publish_mode}")
+        messages.addMessage(f"Stations target: {stations_target}")
+        messages.addMessage(f"Intersections target: {intersections_target}")
+        messages.addMessage(f"Overlaps target: {overlaps_target}")
         messages.addMessage(f"Scratch GDB: {scratch}")
 
         outputs = run_stationing_workflow(
@@ -431,14 +819,32 @@ class GenerateStationing(object):
             start_measure=start_measure,
             end_measure=end_measure,
             analysis_layers=analysis_layers,
+            layer_names=original_layer_names,
+            input_route_name=input_route_name,
+            publish_mode=publish_mode,
+            station_target=stations_target,
+            intersection_target=intersections_target,
+            overlap_target=overlaps_target,
             messages=messages,
         )
 
         messages.addMessage(f"Output route: {outputs.route}")
         messages.addMessage(f"Output stations: {outputs.stations}")
+        if getattr(outputs, "published_stations", None):
+            messages.addMessage(
+                f"Published stations layer updated: {outputs.published_stations}"
+            )
+        if getattr(outputs, "published_intersections", None):
+            messages.addMessage(
+                f"Published intersections layer updated: {outputs.published_intersections}"
+            )
+        if getattr(outputs, "published_overlaps", None):
+            messages.addMessage(
+                f"Published overlaps layer updated: {outputs.published_overlaps}"
+            )
 
-        arcpy.SetParameter(6, outputs.route)
-        arcpy.SetParameter(7, outputs.stations)
+        arcpy.SetParameter(10, outputs.route)
+        arcpy.SetParameter(11, outputs.stations)
 
         intersection_output = getattr(outputs, "intersection_output", None)
         if (
@@ -452,13 +858,13 @@ class GenerateStationing(object):
             messages.addMessage(
                 f"Intersections created: {len(outputs.intersections)} layer(s)"
             )
-            arcpy.SetParameter(8, intersection_output)
+            arcpy.SetParameter(12, intersection_output)
         else:
             empty_pts = scratch + "\\empty_intersections"
             if arcpy.Exists(empty_pts):
                 arcpy.management.Delete(empty_pts)
             arcpy.management.CreateFeatureclass(scratch, "empty_intersections", "POINT")
-            arcpy.SetParameter(8, empty_pts)
+            arcpy.SetParameter(12, empty_pts)
 
         overlap_output = getattr(outputs, "overlap_output", None)
         if not overlap_output and hasattr(outputs, "overlaps") and outputs.overlaps:
@@ -466,14 +872,14 @@ class GenerateStationing(object):
 
         if overlap_output:
             messages.addMessage(f"Overlaps created: {len(outputs.overlaps)} layer(s)")
-            arcpy.SetParameter(9, overlap_output)
+            arcpy.SetParameter(13, overlap_output)
         else:
             empty_lines = scratch + "\\empty_overlaps"
             if arcpy.Exists(empty_lines):
                 arcpy.management.Delete(empty_lines)
             arcpy.management.CreateFeatureclass(scratch, "empty_overlaps", "POLYLINE")
-            arcpy.SetParameter(9, empty_lines)
+            arcpy.SetParameter(13, empty_lines)
 
         if hasattr(outputs, "segment") and outputs.segment:
             messages.addMessage(f"Output segment: {outputs.segment}")
-            arcpy.SetParameter(10, outputs.segment)
+            arcpy.SetParameter(14, outputs.segment)

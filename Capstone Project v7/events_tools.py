@@ -1,6 +1,256 @@
 import arcpy, os, re
 from types import SimpleNamespace
 
+from output_fields import (
+    add_field_if_missing,
+    clean_display_name,
+    get_field_names,
+    get_first_value,
+    map_shape_type,
+)
+
+
+def ensure_label_text(dataset, source_field, label_field="Label_Text"):
+    field_names = get_field_names(dataset)
+    if source_field not in field_names:
+        return
+
+    add_field_if_missing(dataset, label_field, "TEXT", field_length=255)
+
+    arcpy.management.CalculateField(
+        dataset,
+        label_field,
+        f"!{source_field}!",
+        "PYTHON3",
+    )
+
+
+def stamp_source_metadata(dataset, source_name, feature_type):
+    source_name = clean_display_name(source_name)
+    add_field_if_missing(dataset, "Source_Name", "TEXT", field_length=100)
+    add_field_if_missing(dataset, "Feature_Type", "TEXT", field_length=20)
+
+    with arcpy.da.UpdateCursor(dataset, ["Source_Name", "Feature_Type"]) as cursor:
+        for row in cursor:
+            row[0] = source_name
+            row[1] = feature_type
+            cursor.updateRow(row)
+
+
+def copy_source_metadata(source_dataset, target_dataset):
+    source_name = get_first_value(source_dataset, "Source_Name")
+    feature_type = get_first_value(source_dataset, "Feature_Type")
+
+    if source_name:
+        add_field_if_missing(target_dataset, "Source_Name", "TEXT", field_length=100)
+    if feature_type:
+        add_field_if_missing(target_dataset, "Feature_Type", "TEXT", field_length=20)
+
+    cursor_fields = []
+    cursor_values = []
+    if source_name:
+        cursor_fields.append("Source_Name")
+        cursor_values.append(source_name)
+    if feature_type:
+        cursor_fields.append("Feature_Type")
+        cursor_values.append(feature_type)
+
+    if not cursor_fields:
+        return
+
+    with arcpy.da.UpdateCursor(target_dataset, cursor_fields) as cursor:
+        for row in cursor:
+            for idx, value in enumerate(cursor_values):
+                row[idx] = value
+            cursor.updateRow(row)
+
+
+def populate_intersection_output_fields(
+    feature_class,
+    route_id_field,
+    route_id_value,
+    route_name,
+    run_id,
+    created_on,
+):
+    route_name = clean_display_name(route_name)
+
+    add_field_if_missing(feature_class, route_id_field, "TEXT", field_length=50)
+    add_field_if_missing(feature_class, "Run_ID", "TEXT", field_length=60)
+    add_field_if_missing(feature_class, "Result_Type", "TEXT", field_length=30)
+    add_field_if_missing(feature_class, "Label_Text", "TEXT", field_length=255)
+    add_field_if_missing(feature_class, "Popup_Text", "TEXT", field_length=255)
+    add_field_if_missing(feature_class, "Created_On", "DATE")
+    add_field_if_missing(feature_class, "Route_Name", "TEXT", field_length=100)
+    add_field_if_missing(feature_class, "Display_Order", "LONG")
+    add_field_if_missing(feature_class, "Status", "TEXT", field_length=20)
+    add_field_if_missing(feature_class, "Symbology_Type", "TEXT", field_length=50)
+    add_field_if_missing(feature_class, "Page_No", "LONG")
+    add_field_if_missing(feature_class, "Notes", "TEXT", field_length=255)
+    add_field_if_missing(feature_class, "Source_Name", "TEXT", field_length=100)
+    add_field_if_missing(feature_class, "Feature_Type", "TEXT", field_length=20)
+
+    default_source_name = clean_display_name(get_first_value(feature_class, "Source_Name"))
+    default_feature_type = get_first_value(feature_class, "Feature_Type")
+
+    cursor_fields = [
+        route_id_field,
+        "MEAS",
+        "Chainage",
+        "Source_Name",
+        "Feature_Type",
+        "Run_ID",
+        "Result_Type",
+        "Label_Text",
+        "Popup_Text",
+        "Created_On",
+        "Route_Name",
+        "Display_Order",
+        "Status",
+        "Symbology_Type",
+        "Page_No",
+    ]
+    with arcpy.da.UpdateCursor(feature_class, cursor_fields) as cursor:
+        for row in cursor:
+            source_name = clean_display_name(row[3], fallback=default_source_name)
+            chainage = row[2]
+            label_text = chainage
+            if source_name and chainage:
+                label_text = f"{source_name} ({chainage})"
+            elif source_name:
+                label_text = source_name
+
+            popup_text = None
+            if source_name and chainage:
+                popup_text = f"Intersection with {source_name} at {chainage}"
+            elif chainage:
+                popup_text = f"Intersection at {chainage}"
+
+            row[0] = route_id_value
+            row[3] = source_name
+            row[4] = row[4] or default_feature_type
+            row[5] = run_id
+            row[6] = "Intersection"
+            row[7] = label_text
+            row[8] = popup_text
+            row[9] = created_on
+            row[10] = route_name
+            row[11] = int(round(float(row[1]))) if row[1] is not None else None
+            row[12] = "active"
+            row[13] = "intersection"
+            cursor.updateRow(row)
+
+
+def populate_overlap_output_fields(
+    feature_class,
+    route_id_field,
+    route_id_value,
+    route_name,
+    run_id,
+    created_on,
+):
+    route_name = clean_display_name(route_name)
+
+    add_field_if_missing(feature_class, route_id_field, "TEXT", field_length=50)
+    add_field_if_missing(feature_class, "Run_ID", "TEXT", field_length=60)
+    add_field_if_missing(feature_class, "Result_Type", "TEXT", field_length=30)
+    add_field_if_missing(feature_class, "Label_Text", "TEXT", field_length=255)
+    add_field_if_missing(feature_class, "Popup_Text", "TEXT", field_length=255)
+    add_field_if_missing(feature_class, "Created_On", "DATE")
+    add_field_if_missing(feature_class, "Route_Name", "TEXT", field_length=100)
+    add_field_if_missing(feature_class, "Display_Order", "LONG")
+    add_field_if_missing(feature_class, "Status", "TEXT", field_length=20)
+    add_field_if_missing(feature_class, "Symbology_Type", "TEXT", field_length=50)
+    add_field_if_missing(feature_class, "Page_No", "LONG")
+    add_field_if_missing(feature_class, "Notes", "TEXT", field_length=255)
+    add_field_if_missing(feature_class, "Source_Name", "TEXT", field_length=100)
+    add_field_if_missing(feature_class, "Feature_Type", "TEXT", field_length=20)
+    add_field_if_missing(feature_class, "Range_Text", "TEXT", field_length=40)
+    add_field_if_missing(feature_class, "Length_m", "DOUBLE")
+
+    field_names = get_field_names(feature_class)
+    default_source_name = clean_display_name(get_first_value(feature_class, "Source_Name"))
+    default_feature_type = get_first_value(feature_class, "Feature_Type")
+
+    cursor_fields = [
+        route_id_field,
+        "FMEAS",
+        "TMEAS",
+        "Source_Name",
+        "Feature_Type",
+        "Range_Text",
+    ]
+    has_chainage_range = "ChainageRange" in field_names
+    if has_chainage_range:
+        cursor_fields.append("ChainageRange")
+
+    cursor_fields.extend(
+        [
+            "Run_ID",
+            "Result_Type",
+            "Label_Text",
+            "Popup_Text",
+            "Created_On",
+            "Route_Name",
+            "Display_Order",
+            "Status",
+            "Symbology_Type",
+            "Page_No",
+            "Length_m",
+        ]
+    )
+    with arcpy.da.UpdateCursor(feature_class, cursor_fields) as cursor:
+        for row in cursor:
+            fmeas = row[1]
+            tmeas = row[2]
+            source_name = clean_display_name(row[3], fallback=default_source_name)
+            range_text = row[5]
+            fallback_range = row[6] if has_chainage_range else None
+            if not range_text and fallback_range:
+                range_text = fallback_range
+
+            metadata_offset = 1 if has_chainage_range else 0
+            run_idx = 6 + metadata_offset
+            result_idx = 7 + metadata_offset
+            label_idx = 8 + metadata_offset
+            popup_idx = 9 + metadata_offset
+            created_idx = 10 + metadata_offset
+            route_name_idx = 11 + metadata_offset
+            display_idx = 12 + metadata_offset
+            status_idx = 13 + metadata_offset
+            symbology_idx = 14 + metadata_offset
+            length_idx = 16 + metadata_offset
+
+            label_text = range_text
+            if source_name and range_text:
+                label_text = f"{source_name}: {range_text}"
+            elif source_name:
+                label_text = source_name
+
+            popup_text = None
+            if source_name and range_text:
+                popup_text = f"Overlap with {source_name} from {range_text}"
+            elif range_text:
+                popup_text = f"Overlap from {range_text}"
+
+            row[0] = route_id_value
+            row[3] = source_name
+            row[4] = row[4] or default_feature_type
+            row[5] = range_text
+            row[run_idx] = run_id
+            row[result_idx] = "Overlap"
+            row[label_idx] = label_text
+            row[popup_idx] = popup_text
+            row[created_idx] = created_on
+            row[route_name_idx] = route_name
+            row[display_idx] = int(round(float(fmeas))) if fmeas is not None else None
+            row[status_idx] = "active"
+            row[symbology_idx] = "overlap"
+            row[length_idx] = (
+                abs(float(tmeas) - float(fmeas)) if None not in (fmeas, tmeas) else None
+            )
+            cursor.updateRow(row)
+
 
 def get_first_word(name):
     for separator in ["_", " ", "-", "."]:
@@ -29,6 +279,7 @@ def create_intersections_and_overlaps(
     route_fc,
     output_gdb,
     analysis_layers,
+    layer_names=None,
 ):
     point_intersections = (
         []
@@ -45,17 +296,35 @@ def create_intersections_and_overlaps(
             desc = arcpy.Describe(layer)
             shape_type = desc.shapeType
 
-            # Try desc.basename first — works for local FCs and named layers
-            raw_name = getattr(desc, "basename", None)
+            # Use the original layer name passed from the tool if available
+            if layer_names and idx < len(layer_names) and layer_names[idx]:
+                source_name = clean_display_name(layer_names[idx])
+                raw_name = source_name
+            else:
+                # Prefer the most descriptive layer name ArcGIS exposes.
+                raw_name = (
+                    getattr(desc, "aliasName", None)
+                    or getattr(desc, "nameString", None)
+                    or getattr(desc, "name", None)
+                    or getattr(desc, "baseName", None)
+                    or getattr(desc, "basename", None)
+                )
 
-            # If basename looks like a URL or is empty, parse the URL instead
-            if not raw_name or raw_name.startswith("http") or "/" in raw_name:
-                raw = str(layer).rstrip("/").rstrip("\\")
-                parts = raw.replace("\\", "/").split("/")
-                skip = {"FeatureServer", "MapServer", "GPServer"}
-                while parts and (parts[-1].isdigit() or parts[-1] in skip):
-                    parts.pop()
-                raw_name = parts[-1] if parts else f"layer_{idx}"
+                # If basename looks like a URL or is empty, parse the URL instead
+                if not raw_name or raw_name.startswith("http") or "/" in raw_name:
+                    raw = str(layer).rstrip("/").rstrip("\\")
+                    parts = raw.replace("\\", "/").split("/")
+                    skip = {"FeatureServer", "MapServer", "GPServer"}
+                    while parts and (parts[-1].isdigit() or parts[-1] in skip):
+                        parts.pop()
+                    raw_name = parts[-1] if parts else f"layer_{idx}"
+
+                source_name = clean_display_name(raw_name)
+
+            if not source_name:
+                source_name = f"Analysis Layer {idx + 1}"
+
+            raw_name = source_name
 
             layer_name = build_unique_layer_name(raw_name, idx, output_gdb)
 
@@ -63,6 +332,7 @@ def create_intersections_and_overlaps(
                 layer_name.lower() == route_name.lower()
             ):  # Here, the code is checking if layer being checked has same name with route and skips
                 continue  # skips coz intersecting a route with itself would not make sense
+            source_feature_type = map_shape_type(shape_type)
 
             point_out = os.path.join(output_gdb, f"{layer_name}_intersect")
             if arcpy.Exists(point_out):
@@ -73,6 +343,7 @@ def create_intersections_and_overlaps(
             # if count>0, keep output, if =0, delete the empty feature class
             # So that the gdb is not filled by empty feature
             if int(arcpy.management.GetCount(point_out)[0]) > 0:
+                stamp_source_metadata(point_out, source_name, source_feature_type)
                 point_intersections.append(point_out)
             else:
                 arcpy.management.Delete(point_out)
@@ -90,6 +361,7 @@ def create_intersections_and_overlaps(
                 arcpy.management.Delete(temp_layer_ov)
 
                 if int(arcpy.management.GetCount(overlap_out)[0]) > 0:
+                    stamp_source_metadata(overlap_out, source_name, source_feature_type)
                     line_overlaps.append(overlap_out)
                 else:
                     arcpy.management.Delete(overlap_out)
@@ -142,6 +414,7 @@ def locate_intersections_and_overlaps(
         )
 
         if int(arcpy.management.GetCount(out_table)[0]) > 0:
+            copy_source_metadata(point_fc, out_table)
             point_event_tables.append(out_table)
         else:
             arcpy.management.Delete(out_table)
@@ -170,6 +443,7 @@ def locate_intersections_and_overlaps(
         )
 
         if int(arcpy.management.GetCount(out_table)[0]) > 0:
+            copy_source_metadata(overlap_fc, out_table)
             line_event_tables.append(out_table)
         else:
             arcpy.management.Delete(out_table)
@@ -199,7 +473,7 @@ def add_chainage_to_event_tables(point_event_tables, line_event_tables):
 
     # looping through every point event tables. Remember this event tables were already created from point intersections
     for table in point_event_tables:
-        existing_fields = [f.name for f in arcpy.ListFields(table)]
+        existing_fields = get_field_names(table)
 
         # Add chainage field if missing
         if "Chainage" not in existing_fields:
@@ -213,12 +487,13 @@ def add_chainage_to_event_tables(point_event_tables, line_event_tables):
             "PYTHON3",
             code_block,  # This calculates Chainage from MEAS
         )
+        ensure_label_text(table, "Chainage")
 
         # the following for loop, loops through the line event tables.
         # This are the ones created from from overlaps.
         # This are the one with To and Fro Measures instead of single measure like points
     for table in line_event_tables:
-        existing_fields = [f.name for f in arcpy.ListFields(table)]
+        existing_fields = get_field_names(table)
 
         if "FromCh" not in existing_fields:
             arcpy.management.AddField(table, "FromCh", "TEXT", field_length=20)
@@ -228,6 +503,9 @@ def add_chainage_to_event_tables(point_event_tables, line_event_tables):
 
         if "ChainageRange" not in existing_fields:
             arcpy.management.AddField(table, "ChainageRange", "TEXT", field_length=30)
+
+        if "Range_Text" not in existing_fields:
+            arcpy.management.AddField(table, "Range_Text", "TEXT", field_length=40)
 
         arcpy.management.CalculateField(
             table, "FromCh", "chain(!FMEAS!)", "PYTHON3", code_block
@@ -240,6 +518,10 @@ def add_chainage_to_event_tables(point_event_tables, line_event_tables):
         arcpy.management.CalculateField(
             table, "ChainageRange", "!FromCh! + ' - ' + !ToCh!", "PYTHON3"
         )
+        arcpy.management.CalculateField(
+            table, "Range_Text", "!FromCh! + ' - ' + !ToCh!", "PYTHON3"
+        )
+        ensure_label_text(table, "Range_Text")
 
 
 # The foloowing function is a step where event tables above becomes features classes again
@@ -250,6 +532,10 @@ def add_chainage_to_event_tables(point_event_tables, line_event_tables):
 def make_event_layers_from_tables(
     route_fc,
     route_id_field,
+    route_id_value,
+    route_name,
+    run_id,
+    created_on,
     output_gdb,
     point_event_tables,
     line_event_tables,
@@ -274,6 +560,14 @@ def make_event_layers_from_tables(
         )
 
         arcpy.management.CopyFeatures(out_layer, out_fc)
+        populate_intersection_output_fields(
+            feature_class=out_fc,
+            route_id_field=route_id_field,
+            route_id_value=route_id_value,
+            route_name=route_name,
+            run_id=run_id,
+            created_on=created_on,
+        )
         point_event_features.append(out_fc)
 
     for table in line_event_tables:
@@ -293,6 +587,14 @@ def make_event_layers_from_tables(
         )
 
         arcpy.management.CopyFeatures(out_layer, out_fc)
+        populate_overlap_output_fields(
+            feature_class=out_fc,
+            route_id_field=route_id_field,
+            route_id_value=route_id_value,
+            route_name=route_name,
+            run_id=run_id,
+            created_on=created_on,
+        )
         line_event_features.append(out_fc)
 
     return SimpleNamespace(

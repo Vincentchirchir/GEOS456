@@ -1,111 +1,14 @@
 import arcpy
 import os
-from types import SimpleNamespace
 
-from route_tools import create_route_with_measure_system, create_stationing_source_line
-from output_fields import add_field_if_missing, clean_display_name, get_field_names
+from route_tools_v3 import (
+    create_route_with_measure_system,
+    create_stationing_source_line,
+)
 
 # The reason why I addeed this function, is that when you run the tool, it includes the end point after every last interval. Such that you will have duplicate last rows of every route you excute.
 # The end point is important and we dont want to tell the system not to include the end point always
 # For example you have line with 73 metres and you want interval of 10 metres, so instaed of system ending at 70 coz the 3 above 70 is less than 10, the end point will include that 3 and there will be 73 after 70
-
-
-def ensure_label_text(feature_class, source_field, label_field="Label_Text"):
-    field_names = get_field_names(feature_class)
-    if source_field not in field_names:
-        return
-
-    add_field_if_missing(feature_class, label_field, "TEXT", field_length=255)
-
-    arcpy.management.CalculateField(
-        feature_class,
-        label_field,
-        f"!{source_field}!",
-        "PYTHON3",
-    )
-
-
-def populate_station_display_fields(
-    station_points,
-    route_id_field,
-    route_id_value,
-    route_name,
-    run_id,
-    created_on,
-):
-    route_name = clean_display_name(route_name)
-
-    add_field_if_missing(station_points, route_id_field, "TEXT", field_length=50)
-    add_field_if_missing(station_points, "Station_No", "LONG")
-    add_field_if_missing(station_points, "Station_Type", "TEXT", field_length=20)
-    add_field_if_missing(station_points, "Run_ID", "TEXT", field_length=60)
-    add_field_if_missing(station_points, "Result_Type", "TEXT", field_length=30)
-    add_field_if_missing(station_points, "Popup_Text", "TEXT", field_length=255)
-    add_field_if_missing(station_points, "Created_On", "DATE")
-    add_field_if_missing(station_points, "Route_Name", "TEXT", field_length=100)
-    add_field_if_missing(station_points, "Display_Order", "LONG")
-    add_field_if_missing(station_points, "Status", "TEXT", field_length=20)
-    add_field_if_missing(station_points, "Symbology_Type", "TEXT", field_length=50)
-    add_field_if_missing(station_points, "Page_No", "LONG")
-
-    measures = [
-        float(row[0])
-        for row in arcpy.da.SearchCursor(station_points, ["MEAS"])
-        if row[0] is not None
-    ]
-    min_measure = min(measures) if measures else None
-    max_measure = max(measures) if measures else None
-
-    cursor_fields = [
-        route_id_field,
-        "MEAS",
-        "Chainage",
-        "Station_No",
-        "Station_Type",
-        "Run_ID",
-        "Result_Type",
-        "Label_Text",
-        "Popup_Text",
-        "Created_On",
-        "Route_Name",
-        "Display_Order",
-        "Status",
-        "Symbology_Type",
-        "Page_No",
-    ]
-    with arcpy.da.UpdateCursor(station_points, cursor_fields) as cursor:
-        for row in cursor:
-            meas = row[1]
-            chainage = row[2]
-            station_no = int(round(float(meas))) if meas is not None else None
-
-            station_type = "regular"
-            if meas is not None and min_measure is not None and max_measure is not None:
-                if abs(float(meas) - min_measure) < 1e-6:
-                    station_type = "start"
-                elif abs(float(meas) - max_measure) < 1e-6:
-                    station_type = "end"
-
-            row[0] = route_id_value
-            row[3] = station_no
-            row[4] = station_type
-            row[5] = run_id
-            row[6] = "Station"
-            row[7] = chainage
-            if route_name and chainage:
-                row[8] = (
-                    f"{route_name} — {station_type.capitalize()} station at {chainage}"
-                )
-            elif chainage:
-                row[8] = f"{station_type.capitalize()} station at {chainage}"
-            else:
-                row[8] = None
-            row[9] = created_on
-            row[10] = route_name
-            row[11] = station_no
-            row[12] = "active"
-            row[13] = "station"
-            cursor.updateRow(row)
 
 
 def remove_duplicate_station_measure(
@@ -155,11 +58,6 @@ def remove_duplicate_station_measure(
 def join_station_chainage_to_points(
     station_points,
     station_table,
-    route_id_field=None,
-    route_id_value=None,
-    route_name=None,
-    run_id=None,
-    created_on=None,
 ):
     point_fields = [
         f.name for f in arcpy.ListFields(station_points)
@@ -168,7 +66,7 @@ def join_station_chainage_to_points(
     # Now, the for loop statement belowc hecks if those speified fields alraedy exist in the feature
     # So that if theyexists, they are ddeleted to avoid conflicts
     fields_to_delete = []
-    for fld in ["Chainage", "MEAS", "FMEAS", "TMEAS", "LabelText", "Label_Text"]:
+    for fld in ["Chainage", "MEAS", "FMEAS", "TMEAS"]:
         if fld in point_fields:
             fields_to_delete.append(fld)
 
@@ -183,19 +81,6 @@ def join_station_chainage_to_points(
         fields=["MEAS", "Chainage"],
     )
 
-    ensure_label_text(station_points, "Chainage")
-    if all(
-        value is not None for value in [route_id_field, route_id_value, run_id, created_on]
-    ):
-        populate_station_display_fields(
-            station_points=station_points,
-            route_id_field=route_id_field,
-            route_id_value=route_id_value,
-            route_name=route_name,
-            run_id=run_id,
-            created_on=created_on,
-        )
-
 
 def create_route_stationing(
     input_line_fc,
@@ -204,7 +89,7 @@ def create_route_stationing(
     tolerance,
     start_measure=0,
     end_measure=None,
-    route_id_field="ROUTE_ID",
+    route_id_field="Route_ID",
     route_id_value="ROUTE_01",
 ):
     # the following script calls another function from route.p that had prepared the input line with M values
@@ -217,8 +102,8 @@ def create_route_stationing(
         route_id_value=route_id_value,
     )
     # Now we are extracting main route and the base name from the above code
-    route_fc = route_info.route
-    base_name = route_info.base
+    route_fc = route_info["route_fc"]
+    base_name = route_info["base_name"]
 
     # The following script creates a line that station points will be generted on
     # It reuses the function from route.py
@@ -295,20 +180,16 @@ def chain(val):
     arcpy.management.CalculateField(
         station_table, "Chainage", "chain(!MEAS!)", "PYTHON3", calculate_field_code
     )
-    ensure_label_text(station_table, "Chainage")
     # Now lets clean the table by removing the duplicates.
     # We are using the remove duplicates function we created earlier in this script. (The first function in this script)
     remove_duplicate_station_measure(
         station_points=station_points, station_table=station_table, measure_field="MEAS"
     )
 
-    return SimpleNamespace(
-        route=route_fc,
-        source=station_source_fc,
-        stations=station_points,
-        table=station_table,
-        id_field=route_id_field,
-        id_value=route_info.id_value,
-        route_name=base_name,
-        base=base_name,
-    )
+    return {
+        "route_fc": route_fc,
+        "station_source_fc": station_source_fc,
+        "station_points": station_points,
+        "station_table": station_table,
+        "route_id_field": route_id_field,
+    }
