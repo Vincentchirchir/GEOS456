@@ -343,7 +343,7 @@ class GenerateAlignmentSheets(object):
             parameterType="Required",
             direction="Input",
         )
-        map_series_scale.value = 500
+        map_series_scale.value = 0
 
         map_series_orientation = arcpy.Parameter(
             displayName="Page Orientation",

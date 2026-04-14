@@ -64,6 +64,10 @@ Protected_Status= arcpy.Raster("Protected_Status")
 Habitats="Core_Mountain_Lion_Habitats"
 
 
+'''Terrain ruggedness
+It uses FocalStatistics on elevation with a 3x3 window and RANGE to measure how rugged the terrain is. 
+More rugged terrain is treated as better for lion movement. '''
+
 #DERIVE THE TERRAIN RUGGEDNESS RASTER
 #focal stats tool which will calculate a stat for each celll based on its neigbour
 #NbrRectangle (3x3) = uses a 3x3 moving window across the raster
@@ -75,6 +79,10 @@ print(arcpy.GetMessages())
 #save the raster
 Ruggedness.save("Terrain_R")
 
+'''Distance to roads
+It uses DistanceAccumulation("Roads") to calculate how far each cell is from roads. 
+Farther from roads is considered better habitat.'''
+
 #CREATE THE DISTANCE TO ROADS RASTER
 #DistanceAccumulation calculate distance from each cell to the nesrest road
 # --> Higher Value = farther from the roads (more suitable)
@@ -83,6 +91,17 @@ print(arcpy.GetMessages())
 
 #save the raster
 Roads_Distance.save("Distance_to_Roads")
+
+'''Standardize the rasters
+Because the inputs are in different units, the script puts them onto a common cost scale:
+
+Continuous rasters use RescaleByFunction
+rugged terrain: larger values → lower cost
+farther from roads: larger values → lower cost
+
+Discrete rasters use Reclassify
+land cover classes get assigned costs
+protected areas get assigned costs, where more protected means lower cost.'''
 
 #RESCALE THE CONTINOUS RASTERS
 #Rescale By Function standardise the rasters values to a common scale
