@@ -77,42 +77,52 @@ def _copy_raw_intersections_with_chainage(point_fc, event_table, out_fc):
         )
 
 
-# The following function is checking other features against the main route and create point intersection and line overlap
-# Point intersection is where the route meets another feature.
-# Overlaps is where the route shares the same path with another line or passes through a polygon
 def create_intersections_and_overlaps(
     route_fc,
     output_gdb,
     analysis_layers,
 ):
-    point_intersections = (
-        []
-    )  # it will store features created as points or which intersected the route
-    line_overlaps = []  # will store features that overlap the route
+    """
+    Intersects each analysis layer against the route to find crossings and overlaps.
 
-    route_name = os.path.splitext(os.path.basename(route_fc))[
-        0
-    ]  # extracting the route name
+    Point intersections are where the route meets another feature.
+    Line overlaps are where the route shares a path with a polyline or passes
+    through a polygon.
 
-    # loop through the features provided that user thinks they are intersecting or overlapping
+    Layers that produce no results are deleted immediately to keep the GDB clean.
+    Layers that fail are skipped with a warning so one bad layer doesn't stop the tool.
+
+    Parameters
+    ----------
+    route_fc : str
+        Path to the M-enabled route feature class.
+    output_gdb : str
+        Path to the output geodatabase.
+    analysis_layers : list of str
+        Paths to the feature classes to check against the route.
+
+    Returns
+    -------
+    dict
+        point_intersections -- list of in_memory point feature class paths
+        line_overlaps       -- list of output GDB line feature class paths
+    """
+    point_intersections = []
+    line_overlaps = []
+    route_name = os.path.splitext(os.path.basename(route_fc))[0]
+
     for layer in analysis_layers:
-        try:  # try is used for error handling so that if one layer which was provided fails, the whole tool does not crash
+        try:
             desc = arcpy.Describe(layer)
             layer_name = arcpy.ValidateTableName(desc.basename, output_gdb)
             shape_type = desc.shapeType
 
-            if (
-                layer_name.lower() == route_name.lower()
-            ):  # Here, the code is checking if layer being checked has same name with route and skips
-                continue  # skips coz intersecting a route with itself would not make sense
+            if layer_name.lower() == route_name.lower():
+                continue  # skip — intersecting the route with itself makes no sense
 
-            # creaing intersect now
             point_out = rf"in_memory\{layer_name}_intersect"
             arcpy.analysis.Intersect([route_fc, layer], point_out, output_type="POINT")
 
-            # check whether the output above has features
-            # if count>0, keep output, if =0, delete the empty feature class
-            # So that the gdb is not filled by empty feature
             if int(arcpy.management.GetCount(point_out)[0]) > 0:
                 point_out = _explode_multipoint_intersections(point_out)
                 _ensure_leader_anchor_ids(point_out)
@@ -120,9 +130,8 @@ def create_intersections_and_overlaps(
             else:
                 arcpy.management.Delete(point_out)
 
-            # create overlap for polyline or polygon
             if shape_type in ["Polyline", "Polygon"]:
-                overlap_out = os.path.join(output_gdb, f"{layer_name}_overlap")
+                overlap_out = os.path.join(output_gdb, f"{layer_name}_Overlaps")
                 arcpy.analysis.Intersect(
                     [route_fc, layer], overlap_out, output_type="LINE"
                 )
@@ -133,9 +142,7 @@ def create_intersections_and_overlaps(
                     arcpy.management.Delete(overlap_out)
 
         except Exception as e:
-            arcpy.AddWarning(
-                f"Skipped layer {layer}: {e}"
-            )  # if something went wrong for specific layer, ArcGIS shows warning message
+            arcpy.AddWarning(f"Skipped layer {layer}: {e}")
 
     return {
         "point_intersections": point_intersections,
@@ -143,10 +150,6 @@ def create_intersections_and_overlaps(
     }
 
 
-# the following function takes the raw intersection/overlap geometries and converts them into route event tables with measures
-# So the above function was asking, where do features intersect and overlap
-# And this next function answers where those intersections/overlaps occur along the route
-# And also what chainage or measure they have
 def locate_intersections_and_overlaps(
     route_fc,
     route_id_field,
@@ -155,6 +158,34 @@ def locate_intersections_and_overlaps(
     point_intersections,
     line_overlaps,
 ):
+    """
+    Locates intersection and overlap geometries along the route to produce event tables.
+
+    Converts raw point and line geometries into route-referenced event tables that
+    store measure values (MEAS for points, FMEAS/TMEAS for lines). Empty tables
+    are discarded.
+
+    Parameters
+    ----------
+    route_fc : str
+        Path to the M-enabled route feature class.
+    route_id_field : str
+        Name of the route identifier field.
+    out_gdb : str
+        Path to the output geodatabase.
+    tolerance : float
+        Search tolerance for Locate Features Along Routes.
+    point_intersections : list of str
+        Point feature class paths from create_intersections_and_overlaps.
+    line_overlaps : list of str
+        Line feature class paths from create_intersections_and_overlaps.
+
+    Returns
+    -------
+    dict
+        point_event_tables -- list of in_memory event table paths
+        line_event_tables  -- list of output GDB event table paths
+    """
     point_event_tables = []
     line_event_tables = []
 
@@ -164,7 +195,6 @@ def locate_intersections_and_overlaps(
         )
         out_table = rf"in_memory\{point_name}_event"
 
-        # this is the key step. It takes each point feature and finds where it lies along the route
         arcpy.lr.LocateFeaturesAlongRoutes(
             in_features=point_fc,
             in_routes=route_fc,
@@ -187,8 +217,13 @@ def locate_intersections_and_overlaps(
             os.path.splitext(os.path.basename(overlap_fc))[0], out_gdb
         )
 
-        # out_table = rf"in_memory\{overlap_name}_event"
-        out_table = os.path.join(out_gdb, f"{overlap_name}_event")
+        # Strip "_Overlaps" suffix so the output table gets a clean name
+        base_overlap_name = (
+            overlap_name[: -len("_Overlaps")]
+            if overlap_name.lower().endswith("_overlaps")
+            else overlap_name
+        )
+        out_table = os.path.join(out_gdb, f"{base_overlap_name}_OverlapsTable")
 
         arcpy.lr.LocateFeaturesAlongRoutes(
             in_features=overlap_fc,
@@ -212,43 +247,46 @@ def locate_intersections_and_overlaps(
     }
 
 
-# label formatting. It converts those raw numbers into chainage such as 1+200
 def chainage_code_block():
+    """
+    Returns the Python code block used by CalculateField to format a measure
+    value as a chainage string e.g. 1230 -> "1+230".
+    """
     return r"""
 def chain(val):
-    val = int(round(float(val))) #this does 3 things, converts value to float, rounds it, and converts it to interger
-    km = val // 1000 #this gets the thousand part 1230//1000=1, 3500//1000=3
-    remainder = val % 1000#takes the leftover after removing thousand. When we removed thousand above we ramain with 230, amd 500
-    return f"{km}+{remainder:03d}"#formats the results as chainage text. 1230 now becomes 1+230. :03d means the remainder is always shown with 3 digits. That is why 5 becomes 005, 50 becomes 050, 500 remains 500
+    val = int(round(float(val)))
+    km = val // 1000
+    remainder = val % 1000
+    return f"{km}+{remainder:03d}"
 """
 
 
-# this function add chainage labels to both point event tables and line event tables
 def add_chainage_to_event_tables(point_event_tables, line_event_tables):
-    code_block = (
-        chainage_code_block()
-    )  # calls function above and stores the returned python code in code_block
+    """
+    Adds formatted chainage fields to point and line event tables.
 
-    # looping through every point event tables. Remember this event tables were already created from point intersections
+    Point tables get a single Chainage field calculated from MEAS.
+    Line tables get FromCh, ToCh, and ChainageRange calculated from FMEAS and TMEAS.
+
+    Parameters
+    ----------
+    point_event_tables : list of str
+        Event table paths for point intersections.
+    line_event_tables : list of str
+        Event table paths for line overlaps.
+    """
+    code_block = chainage_code_block()
+
     for table in point_event_tables:
         existing_fields = [f.name for f in arcpy.ListFields(table)]
 
-        # Add chainage field if missing
         if "Chainage" not in existing_fields:
             arcpy.management.AddField(table, "Chainage", "TEXT", field_length=20)
 
-        # calculate the field we added above. That is chainage
         arcpy.management.CalculateField(
-            table,
-            "Chainage",
-            "chain(!MEAS!)",
-            "PYTHON3",
-            code_block,  # This calculates Chainage from MEAS
+            table, "Chainage", "chain(!MEAS!)", "PYTHON3", code_block
         )
 
-        # the following for loop, loops through the line event tables.
-        # This are the ones created from from overlaps.
-        # This are the one with To and Fro Measures instead of single measure like points
     for table in line_event_tables:
         existing_fields = [f.name for f in arcpy.ListFields(table)]
 
@@ -274,11 +312,6 @@ def add_chainage_to_event_tables(point_event_tables, line_event_tables):
         )
 
 
-# The foloowing function is a step where event tables above becomes features classes again
-# Coz at first we had raw intersection/overlap geometries
-# Then event tables with MEAS, FMEAS, TMEAS
-# Then we added field and calculated the fields including chainage  to those tables
-# Now we use those tables plus the route to create a feature class from those tables
 def make_event_layers_from_tables(
     route_fc,
     route_id_field,
@@ -287,6 +320,35 @@ def make_event_layers_from_tables(
     line_event_tables,
     point_intersections=None,
 ):
+    """
+    Converts event tables back into feature classes using the route geometry.
+
+    For point intersections, uses the original raw geometry (with leader anchor
+    positions) where available, falling back to Make Route Event Layer otherwise.
+    For line overlaps, creates features in_memory from the overlap event tables.
+
+    Parameters
+    ----------
+    route_fc : str
+        Path to the M-enabled route feature class.
+    route_id_field : str
+        Name of the route identifier field.
+    output_gdb : str
+        Path to the output geodatabase.
+    point_event_tables : list of str
+        Event table paths for point intersections.
+    line_event_tables : list of str
+        Event table paths for line overlaps.
+    point_intersections : list of str, optional
+        Original raw intersection point feature classes. Used to preserve exact
+        crossing geometry for leader anchors.
+
+    Returns
+    -------
+    dict
+        point_event_features -- list of output point feature class paths
+        line_event_features  -- list of in_memory line feature class paths
+    """
     point_event_features = []
     line_event_features = []
     point_intersection_lookup = _build_point_intersection_lookup(
@@ -298,8 +360,19 @@ def make_event_layers_from_tables(
             os.path.splitext(os.path.basename(table))[0], output_gdb
         )
 
+        # Strip event-table suffixes so the output FC gets a clean name.
+        # Event tables are named '{layer}_intersect_event'; without stripping,
+        # the output FC would be '{layer}_intersect_event_Intersections'.
+        # Longest suffix is checked first so '_intersect_event' matches before
+        # the shorter '_event' fallback.
+        clean_name = base_name
+        for suffix in ("_intersect_event", "_event"):
+            if clean_name.lower().endswith(suffix.lower()):
+                clean_name = clean_name[: -len(suffix)]
+                break
+
         out_layer = f"{base_name}_layer"
-        out_fc = os.path.join(output_gdb, f"{base_name}_intersect")
+        out_fc = os.path.join(output_gdb, f"{clean_name}_Intersections")
         point_name = (
             base_name[:-6] if base_name.lower().endswith("_event") else base_name
         )
@@ -324,7 +397,7 @@ def make_event_layers_from_tables(
         if arcpy.Exists(out_fc):
             desc = arcpy.Describe(out_fc)
             if desc.shapeType == "Multipoint":
-                single_fc = os.path.join(output_gdb, f"{base_name}_single")
+                single_fc = os.path.join(output_gdb, f"{clean_name}_single")
 
                 if arcpy.Exists(single_fc):
                     arcpy.management.Delete(single_fc)
@@ -340,7 +413,6 @@ def make_event_layers_from_tables(
         )
 
         out_layer = f"{base_name}_layer"
-        # out_fc = os.path.join(output_gdb, f"{base_name}_overlap")
         out_fc = rf"in_memory\{base_name}_overlap"
 
         arcpy.lr.MakeRouteEventLayer(

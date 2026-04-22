@@ -15,17 +15,15 @@ def get_base_feature_name(path_or_name):
     # Suffixes are ordered longest-first so more specific patterns match before
     # shorter ones — e.g. '_intersect_event_intersect' before '_intersect_event'
     suffixes = [
-        "_intersect_event_single",
-        "_intersect_event_intersect",
-        "_intersect_event",
-        "_overlap_event_overlap",
-        "_overlap_event",
-        "_intersect",
-        "_overlap",
+        "_event_Intersections",
         "_event_single",
         "_event",
+        "_OverlapsTable_overlap",
+        "_OverlapsTable",
+        "_Intersections",
+        "_Overlaps",
+        "_overlap",
         "_single",
-        "_event_intersect",
     ]
 
     for suffix in suffixes:
@@ -47,7 +45,7 @@ def build_band_records(point_event_tables, line_event_tables):
     Line records contain:  type, range, fmeas, tmeas, source_table, source_name
 
     Parameters
-    
+    ----------
     point_event_tables : list of str
         Paths to point event tables (each has MEAS and Chainage fields).
     line_event_tables : list of str
@@ -484,7 +482,6 @@ def draw_line_band_labels(
 
     for i, rec in enumerate(line_records, start=1):
 
-        # Only process line records
         if rec.get("type") != "LINE":
             continue
 
@@ -839,16 +836,12 @@ def wrap_label_text(text, max_chars=12):
     current_line = ""
 
     for word in words:
-        # Check if adding this word would exceed the line length limit
         if current_line and len(current_line) + 1 + len(word) > max_chars:
-            # Current line is full — save it and start a new one
             lines.append(current_line)
             current_line = word
         else:
-            # Word fits on the current line — append it
             current_line = f"{current_line} {word}".strip()
 
-    # Save the last line
     if current_line:
         lines.append(current_line)
 
@@ -1055,11 +1048,9 @@ def draw_point_ticks_and_labels(
 
         rec_type = rec.get("type")
 
-        # Only process POINT and LINE records
         if rec_type not in ("POINT", "LINE"):
             continue
 
-        # x position from map layout coordinates
         x = rec.get("x_map_layout")
 
         # Source name is primary label — fall back to chainage
@@ -1076,14 +1067,12 @@ def draw_point_ticks_and_labels(
         # Wrap long labels so they do not run into neighbouring labels
         label_text = wrap_label_text(label_text, max_chars=max_label_chars)
 
-        # Route by type — NOT by index  route by type 
+        # Route by type — NOT by index
         if rec_type == "POINT":
-            # Intersection - top band
             tick_band_y     = band_y_top
             current_label_y = top_rows[point_counter % 4]
             point_counter  += 1
 
-            # Draw single tick
             try:
                 tick_geom = arcpy.Polyline(
                     arcpy.Array([
@@ -1147,7 +1136,6 @@ def draw_point_ticks_and_labels(
                         f"Could not create exit tick for '{label_text}': {type(e).__name__}: {e}"
                     )
 
-        # Draw label at the correct band row 
         try:
             txt = aprx.createTextElement(
                 layout,
@@ -1260,9 +1248,8 @@ def clear_point_ticks_and_labels(layout, prefix="PointTick"):
     removed = 0
 
     for el in layout.listElements():
-        # Match any element whose name starts with the given prefix
         if el.name.startswith(prefix):
             el.delete()
             removed += 1
 
-    return removed  # return count so the caller can log how many were removed
+    return removed

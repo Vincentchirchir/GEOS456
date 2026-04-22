@@ -1,43 +1,20 @@
 import arcpy
 import time
 
-# Both bands are 1 inch tall.
-# Top band holds 3 horizontal bar LINES.
-# Bottom band holds 3 horizontal bar LINES.
-# Bar lines are single horizontal lines — NOT polygons — so they cannot
-# double up on reruns the way polygon top/bottom edge pairs do.
-# Page proportions — all positions expressed as fractions of page height
-# so the layout scales correctly across different page sizes.
-# Top stationing band — top 1" of the page
-BAND_TOP_UPPER_FRAC = 10.50 / 11.0  # top edge of upper stationing band
-BAND_BOTTOM_UPPER_FRAC = 9.50 / 11.0  # bottom edge of upper stationing band
-
-# Main map frame sits between the two bands
-MAP_TOP_FRAC = BAND_BOTTOM_UPPER_FRAC  # 9.50" / 11"
-MAP_BOTTOM_FRAC = 4.5 / 11.0  # 3.17" / 11"
-
-# Bottom stationing band — 1" just above the bottom elements
-BAND_TOP_LOWER_FRAC = MAP_BOTTOM_FRAC  # 3.17" / 11"
-BAND_BOTTOM_LOWER_FRAC = 2.17 / 11.0  # 2.17" / 11"
-
-# Bottom elements (Legend, Tables, Project Info) occupy 0 to 2.17"
-BOTTOM_ELEMENTS_TOP_FRAC = BAND_BOTTOM_LOWER_FRAC
-
-# TOP band bar line positions (single y value per bar)
-# Each bar is one horizontal line — no top/bottom pair needed.
-# Three lines divide the top band into readable rows.
-TOP_BAR5_FRAC = 10.5 / 11 #top bar line
-TOP_BAR1_FRAC = 10.0 / 11.0  # top bar line
-TOP_BAR2_FRAC = 9.5 / 11.0  # middle bar line
-TOP_BAR3_FRAC = 9.0 / 11.0  # bottom bar line
-TOP_BAR4_FRAC = 8.5 / 11.0  # bottom bar line
-
-# BOTTOM band bar line positions
-# Labels alternate between the gap above Bar 5 and the gap above Bar 6.
-BOT_BAR4_FRAC = 4.0 / 11.0  # top bar line
-BOT_BAR5_FRAC = 3.5 / 11.0  # middle bar line
-BOT_BAR6_FRAC = 3.0 / 11.0  # bottom bar line
-BOT_BAR7_FRAC = 2.5 / 11.0  # bottom bar line
+from layout_tools import (
+    BAND_TOP_UPPER_FRAC,
+    BAND_BOTTOM_LOWER_FRAC,
+    BOTTOM_ELEMENTS_TOP_FRAC,
+    TOP_BAR5_FRAC,
+    TOP_BAR1_FRAC,
+    TOP_BAR2_FRAC,
+    TOP_BAR3_FRAC,
+    TOP_BAR4_FRAC,
+    BOT_BAR4_FRAC,
+    BOT_BAR5_FRAC,
+    BOT_BAR6_FRAC,
+    BOT_BAR7_FRAC,
+)
 
 
 def add_legend(project, layout, map_frame, map_name, width, height):
@@ -264,7 +241,7 @@ def add_standard_texts(project, layout, width, height):
     unlocked_texts = []
 
     texts = [
-        #  Section headings (rotated, left margin)
+        # Section headings (rotated, left margin)
         {
             "text": "Legend",
             "text_x": width * 0.0100636363636364,
@@ -278,7 +255,7 @@ def add_standard_texts(project, layout, width, height):
         },
         {
             "text": "Plan View",
-            "text_x": width *  0.010272727272727,
+            "text_x": width * 0.010272727272727,
             "text_y": height * 0.5435764705882350,
             "rotation": 90,
             "name": "Plan View",
@@ -300,7 +277,7 @@ def add_standard_texts(project, layout, width, height):
         },
         {
             "text": "Intersection",
-            "text_x": width *  0.010063636363636,
+            "text_x": width * 0.010063636363636,
             "text_y": height * 0.2729764705882350,
             "rotation": 90,
             "name": "Intersection Bottom",
@@ -357,7 +334,7 @@ def add_standard_texts(project, layout, width, height):
         # Intersection table column headers
         {
             "text": "ID",
-            "text_x": width *  0.630472727272727,
+            "text_x": width * 0.630472727272727,
             "text_y": height * 0.1689058823529410,
             "rotation": 0,
             "name": "Point ID",
@@ -368,7 +345,7 @@ def add_standard_texts(project, layout, width, height):
         },
         {
             "text": "Stationing",
-            "text_x": width *  0.675890909090909,
+            "text_x": width * 0.675890909090909,
             "text_y": height * 0.1689058823529410,
             "rotation": 0,
             "name": "Stationing Info",
@@ -379,7 +356,7 @@ def add_standard_texts(project, layout, width, height):
         },
         {
             "text": "Type",
-            "text_x": width *  0.738045454545454,
+            "text_x": width * 0.738045454545454,
             "text_y": height * 0.1689058823529410,
             "rotation": 0,
             "name": "Intersection Type",
@@ -804,32 +781,33 @@ def add_standard_texts(project, layout, width, height):
     # groups so that layout.listElements() can find them directly by name.
     # Initialized with " " (space) so ArcPy registers the element.
     # Filled automatically by auto_populate_layout().
+    summary_center_x = width * ((0.77154545454545500 + 0.84103636363636400) / 2)
     summary_row_texts = [
         {
             "text": " ",
-            "text_x": width * 0.7730,
-            "text_y": height * 0.1650,
+            "text_x": summary_center_x,
+            "text_y": height * ((0.1585529411764710 + 0.1714941176470590) / 2),
             "name": "Intersection Summary Row 1",
             "font_size": 3,
         },
         {
             "text": " ",
-            "text_x": width * 0.7730,
-            "text_y": height * 0.1380,
+            "text_x": summary_center_x,
+            "text_y": height * ((0.1326352941176470 + 0.1455764705882350) / 2),
             "name": "Intersection Summary Row 2",
             "font_size": 3,
         },
         {
             "text": " ",
-            "text_x": width * 0.7730,
-            "text_y": height * 0.1110,
+            "text_x": summary_center_x,
+            "text_y": height * ((0.1068117647058820 + 0.1197647058823530) / 2),
             "name": "Intersection Summary Row 3",
             "font_size": 3,
         },
         {
             "text": " ",
-            "text_x": width * 0.7730,
-            "text_y": height * 0.0850,
+            "text_x": summary_center_x,
+            "text_y": height * ((0.0809058823529412 + 0.0944000000000000) / 2),
             "name": "Intersection Summary Row 4",
             "font_size": 3,
         },
@@ -856,6 +834,7 @@ def add_standard_texts(project, layout, width, height):
                 time.sleep(0.1)
 
         if cim:
+            cim.anchor = "CenterPoint"
             cim.graphic.symbol.symbol.fontFamilyName = "Tahoma"
             cim.graphic.symbol.symbol.fontStyleName = "Regular"
             cim.graphic.symbol.symbol.underline = False
@@ -864,22 +843,155 @@ def add_standard_texts(project, layout, width, height):
             text_element.setDefinition(cim)
 
 
+def add_auto_title(project, layout, width, height, title_text, subtitle_text):
+    """
+    Places auto-generated values into the project info title block.
+
+    The project info column is reordered to read:
+        1. Project Name      -> input feature + "Alignment Sheet"
+        2. Location Address  -> geocoded city/coordinate fallback + year
+        3. Project Number    -> blank
+        4. Client            -> blank
+        5. Notes             -> blank
+
+    Existing static labels are preserved, but the second and third labels are
+    swapped so "Location Address" sits immediately below "Project Name".
+
+    Rerun safety
+    ------------
+    Auto-generated value elements are deleted before redrawing so reruns never
+    stack duplicate text.
+
+    Failure handling
+    ----------------
+    Each element is created in its own try/except block. Warnings are issued
+    rather than exceptions so the rest of the layout build is never blocked by
+    a cosmetic step.
+
+    Parameters
+    ----------
+    project : arcpy.mp.ArcGISProject
+    layout : arcpy.mp.Layout
+    width, height : float
+        Layout page dimensions in inches.
+    title_text : str
+        Value to place in the Project Name box.
+    subtitle_text : str
+        Value to place in the Location Address box.
+    """
+
+    for element_name in (
+        "Auto Project Name",
+        "Auto Location Address",
+    ):
+        for el in layout.listElements("TEXT_ELEMENT", element_name):
+            try:
+                el.delete()
+            except Exception:
+                pass
+
+    header_text_overrides = {
+        "Project Name": "Project Name",
+        "Project Number": "Location Address",
+        "Location Address": "Project Number",
+        "Client": "Client",
+        "Notes": "Notes",
+    }
+    for element_name, label_text in header_text_overrides.items():
+        for el in layout.listElements("TEXT_ELEMENT", element_name):
+            try:
+                el.text = label_text
+            except Exception:
+                pass
+
+    title_x = width * ((0.8410363636363640 + 0.9152909090909090) / 2.0)
+
+    elements = [
+        {
+            "text": title_text,
+            "x": title_x,
+            "y": height * 0.1760,
+            "name": "Auto Project Name",
+            "font_size": 5,
+            "font_style": "Regular",
+            "italic": False,
+            "underline": False,
+        },
+        {
+            "text": subtitle_text,
+            "x": title_x,
+            "y": height * 0.1505,
+            "name": "Auto Location Address",
+            "font_size": 5,
+            "font_style": "Regular",
+            "italic": False,
+            "underline": False,
+        },
+    ]
+
+    for spec in elements:
+        if not spec["text"]:
+            continue
+        try:
+            location = arcpy.Point(spec["x"], spec["y"])
+            el = project.createTextElement(
+                layout,
+                location,
+                "POINT",
+                spec["text"],
+                spec["font_size"],
+            )
+            el.name = spec["name"]
+
+            # Apply font styling through CIM.  Two attempts are made because
+            # ArcGIS Pro occasionally needs a brief moment after element
+            # creation before the CIM definition becomes accessible.
+            cim = None
+            for _ in range(2):
+                try:
+                    cim = el.getDefinition("V3")
+                    if cim:
+                        break
+                except Exception:
+                    time.sleep(0.1)
+
+            if cim:
+                sym = cim.graphic.symbol.symbol
+                sym.fontFamilyName = "Tahoma"
+                sym.fontStyleName = spec["font_style"]
+                sym.italic = spec["italic"]
+                sym.underline = spec["underline"]
+                cim.anchor = "CenterPoint"
+                # Scale font height proportionally to page size.
+                # The denominator 8.5 matches the reference height used
+                # throughout add_standard_texts for visual consistency.
+                sym.height = spec["font_size"] * (height / 8.5)
+                cim.locked = False
+                el.setDefinition(cim)
+
+        except Exception as e:
+            arcpy.AddWarning(
+                f"Could not create layout text element '{spec['name']}': {e}. "
+                "The element can be added manually from the layout Contents pane."
+            )
+
+
 def add_boundary_graphics(project, layout, width, height, map_frame):
     """
     Draws all boundary boxes and stationing bar lines on the layout.
 
-    CLEANUP ON RERUN:
-        The boundary group is deleted at the start so reruns do not stack
-        duplicate elements. The group is named "DO NOT TOUCH (Boundaries)".
+    Deletes the existing boundary group before drawing so reruns do not
+    stack duplicate elements. The group is named "DO NOT TOUCH (Boundaries)".
 
-    Layout structure:
-        Top stationing band   (9.50" to 10.50") — outer border + 3 bar LINES
-        Plan View border      (2.67" to 9.50")
-        Bottom stationing band (1.67" to 2.67") — outer border + 3 bar LINES
-        Bottom elements       (0" to 1.67")     — all polygon boxes unchanged
+    Layout structure
+    ----------------
+    Top stationing band    (9.50" to 10.50") — outer border + bar lines
+    Plan View border       (4.50" to 9.50")
+    Bottom stationing band (2.17" to 4.50") — outer border + bar lines
+    Bottom elements        (0"    to 2.17") — polygon boxes
 
-    Stationing bars are LINES not polygons — one element per bar means
-    nothing doubles up when the tool reruns.
+    Stationing bars are polylines, not polygons — one element per bar
+    so reruns never create duplicates.
     """
 
     # Delete existing boundary group before redrawing
@@ -906,7 +1018,7 @@ def add_boundary_graphics(project, layout, width, height, map_frame):
             "y_max_poly": height * 0.1844352941176470,
             "outline": 0.25,
         },
-        # ─Left margin section label boxes
+        # Left margin section label boxes
         {
             "polygon_name": "Legend Title Box",
             "x_min_poly": 0,
@@ -939,7 +1051,7 @@ def add_boundary_graphics(project, layout, width, height, map_frame):
             "y_max_poly": height * 0.4090941176470590,
             "outline": 0.5,
         },
-        #  Legend and Mini Map
+        # Legend and Mini Map
         {
             "polygon_name": "Legend",
             "x_min_poly": width * 0.011818181818182,
@@ -1139,7 +1251,7 @@ def add_boundary_graphics(project, layout, width, height, map_frame):
             "y_max_poly": height * 0.1844,
             "outline": 0.5,
         },
-        #  Intersection Summary
+        # Intersection Summary
         {
             "polygon_name": "Intersection Summary Title",
             "x_min_poly": width * 0.77154545454545500,
@@ -1302,7 +1414,7 @@ def add_boundary_graphics(project, layout, width, height, map_frame):
             "x_max_poly": width,
             "y_max_poly": height,
             "outline": 0.5,
-        }
+        },
     ]
 
     # Draw all polygon boundaries
@@ -1348,7 +1460,7 @@ def add_boundary_graphics(project, layout, width, height, map_frame):
     ]
 
     # Left edge matches the stationing border left edge
-    bar_x_left = width *  0.011963636363636 
+    bar_x_left = width * 0.011963636363636
     bar_x_right = width  # bars span the full page width
 
     for bar in bar_lines:
@@ -1368,13 +1480,13 @@ def add_boundary_graphics(project, layout, width, height, map_frame):
         # Draw the line element on the layout
         bar_el = project.createGraphicElement(layout, bar_geom, name=bar["name"])
         bar_cim = bar_el.getDefinition("V3")
-        bar_cim.graphic.symbol.symbol.symbolLayers[0].width = 0.5 
-        bar_cim.preserveAspectRatio = False 
+        bar_cim.graphic.symbol.symbol.symbolLayers[0].width = 0.5
+        bar_cim.preserveAspectRatio = False
         bar_el.setDefinition(bar_cim)
 
         grouping_elements.append(bar_el)
 
-    # --- Group all elements and lock so nothing can be accidentally moved ----
+    # Group all elements and lock so nothing can be accidentally moved
     # Polygons and bar lines are grouped together under one locked group.
     if grouping_elements:
         group = project.createGroupElement(

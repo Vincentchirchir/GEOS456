@@ -2,8 +2,9 @@ import arcpy
 import datetime
 import os
 
+ENABLE_INTERSECTION_SUMMARY = False
 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # AUTO-POPULATE LAYOUT TEXT ELEMENTS
 #
 # Fills layout text elements that can be derived automatically from the
@@ -25,12 +26,10 @@ import os
 #   - Intersection Summary from band_records grouped by source name
 #
 # Elements left blank for manual entry:
-#   - Project Name, Project Number, Client, Location Address
+#   - Project Number, Client
 #   - Notes, Disclaimer, Data Sources
 #   - Diameter, Material, Type, Company, Company Logo
 #   - Completed By, Reviewed By, Signed By
-# ─────────────────────────────────────────────────────────────────────────────
-
 
 def _get_named_text_elements(layout, element_name):
     """
@@ -66,15 +65,22 @@ def _delete_text_elements(layout, element_name):
     return removed
 
 
-def _set_text_element_at(layout, project, element_name, text, x, y, font_size=3):
+def _set_text_element_at(
+    layout,
+    project,
+    element_name,
+    text,
+    x,
+    y,
+    font_size=3,
+    anchor="CenterPoint",
+):
     """
     Creates or updates a text element at a specific x, y position on the layout.
 
     Deletes any existing element with the same name first so reruns do not
     stack duplicate elements on top of each other.
     """
-    # Delete all existing elements with this name to avoid stacked duplicates
-    # from previous pages or interrupted runs.
     _delete_text_elements(layout, element_name)
 
     if not text:
@@ -91,10 +97,11 @@ def _set_text_element_at(layout, project, element_name, text, x, y, font_size=3)
         txt.name = element_name
 
         cim = txt.getDefinition("V3")
-        cim.anchor = "CenterPoint"
+        cim.anchor = anchor
         cim.graphic.symbol.symbol.fontFamilyName = "Tahoma"
         cim.graphic.symbol.symbol.height = font_size
         txt.setDefinition(cim)
+        txt.name = element_name
 
     except Exception as e:
         arcpy.AddWarning(f"Could not create text element '{element_name}': {e}")
@@ -141,10 +148,95 @@ def _clear_text_element(layout, element_name):
     return cleared
 
 
+def _upsert_text_element_at(
+    layout,
+    project,
+    element_name,
+    text,
+    x,
+    y,
+    font_size=3,
+    anchor="CenterPoint",
+):
+    """
+    Updates an existing named text element in place, or creates it if missing.
+
+    This is safer than delete-and-recreate for layouts that may already contain
+    grouped or stale elements, and it also repairs older layouts that were
+    created before certain placeholder rows existed.
+    """
+    def _create_named_text_element(content):
+        txt = project.createTextElement(
+            layout,
+            arcpy.Point(x, y),
+            "POINT",
+            content if content else " ",
+            font_size,
+        )
+        txt.name = element_name
+
+        cim = txt.getDefinition("V3")
+        cim.anchor = anchor
+        cim.graphic.symbol.symbol.fontFamilyName = "Tahoma"
+        cim.graphic.symbol.symbol.height = font_size
+        txt.setDefinition(cim)
+        txt.name = element_name  # re-assert: setDefinition can reset the name to ""
+        return txt
+
+    matches = _get_named_text_elements(layout, element_name)
+    if matches:
+        keeper = matches[0]
+        updated = False
+        try:
+            keeper.text = text
+            keeper.elementPositionX = x
+            keeper.elementPositionY = y
+            updated = True
+        except Exception:
+            updated = False
+
+        for extra in matches[1:]:
+            try:
+                extra.delete()
+            except Exception:
+                pass
+
+        if not updated:
+            try:
+                keeper.delete()
+            except Exception:
+                pass
+            try:
+                _create_named_text_element(text)
+                return True
+            except Exception as e:
+                arcpy.AddWarning(f"Could not create text element '{element_name}': {e}")
+                return False
+
+        try:
+            cim = keeper.getDefinition("V3")
+            cim.anchor = anchor
+            cim.graphic.symbol.symbol.fontFamilyName = "Tahoma"
+            cim.graphic.symbol.symbol.height = font_size
+            keeper.setDefinition(cim)
+            keeper.name = element_name  # re-assert: setDefinition can reset the name to ""
+        except Exception:
+            pass
+        return True
+
+    try:
+        _create_named_text_element(text)
+        return True
+
+    except Exception as e:
+        arcpy.AddWarning(f"Could not create text element '{element_name}': {e}")
+        return False
+
+
 def _format_chainage(value):
     """
     Formats a raw measure value into chainage string e.g. 1230 -> '1+230'.
-    Matches the chainage_code_block() logic in events_tools_v3.py.
+    Matches the chainage_code_block() logic in events_tools.py.
     """
     val = int(round(float(value)))
     km = val // 1000
@@ -237,7 +329,9 @@ def _build_intersection_summary(band_records):
     summary = {}
 
     for rec in band_records:
-        name = rec.get("source_name", "Unknown")
+        # Use `or` so that None and "" both fall back to "Unknown", not just
+        # a missing key — otherwise sorted() crashes on NoneType comparisons.
+        name = rec.get("source_name") or "Unknown"
         if name not in summary:
             summary[name] = {"intersections": 0, "overlaps": 0}
 
@@ -249,70 +343,135 @@ def _build_intersection_summary(band_records):
     return summary
 
 
+def _delete_text_elements_in_box(layout, x_min, x_max, y_min, y_max):
+    """
+    Deletes text elements whose anchor point falls inside a layout box.
+
+    This clears stale summary text from previous buggy runs, including unnamed
+    leftovers that exact-name cleanup cannot catch.
+    """
+    removed = 0
+    for el in layout.listElements("TEXT_ELEMENT"):
+        try:
+            x = el.elementPositionX
+            y = el.elementPositionY
+        except Exception:
+            continue
+
+        if x_min <= x <= x_max and y_min <= y <= y_max:
+            try:
+                el.delete()
+                removed += 1
+            except Exception:
+                pass
+    return removed
+
+
+def _clean_summary_source_name(name):
+    """
+    Shortens band-record source names for the narrow summary panel.
+    """
+    text = (name or "Unknown").strip()
+    lower = text.lower()
+    for suffix in (" intersect", " intersection"):
+        if lower.endswith(suffix):
+            return text[: -len(suffix)].strip()
+    return text
+
+
 def _populate_intersection_summary(layout, project, width, height, band_records):
     """
     Updates the four summary rows using page-filtered band records.
 
-    This is intentionally independent from the intersection table population.
-    The summary needs to update on every page even when the table has no rows
-    or if the table formatting logic changes later.
+    Uses in-place text updates (same pattern as all other auto-populate fields)
+    rather than delete-and-recreate. Delete-and-recreate fails silently when
+    the template element is inside a layout group — the delete is swallowed,
+    the old element persists, a new one is created on top, and the row renders
+    doubled/garbled text.
     """
     try:
+        if not ENABLE_INTERSECTION_SUMMARY:
+            summary_box_left = width * 0.77154545454545500
+            summary_box_right = width * 0.84103636363636400
+            summary_box_bottom = height * 0.0809058823529412
+            summary_box_top = height * 0.1714941176470590
+
+            # Temporary disable: clear any stale summary text from the row area
+            # so exported PDFs stay clean while the summary feature is revisited.
+            _delete_text_elements_in_box(
+                layout,
+                summary_box_left,
+                summary_box_right,
+                summary_box_bottom,
+                summary_box_top,
+            )
+            for idx in range(1, 5):
+                _clear_text_element(layout, f"Intersection Summary Row {idx}")
+
+            arcpy.AddMessage("  Intersection Summary: disabled.")
+            return
+
         summary = _build_intersection_summary(band_records)
 
-        summary_x = width * 0.7730
-        summary_y_positions = [
-            height * 0.1650,
-            height * 0.1380,
-            height * 0.1110,
-            height * 0.0850,
+        summary_box_left = width * 0.77154545454545500
+        summary_box_right = width * 0.84103636363636400
+        summary_box_bottom = height * 0.0809058823529412
+        summary_box_top = height * 0.1714941176470590
+        summary_text_x = summary_box_left + (width * 0.0045)
+        summary_row_y_positions = [
+            height * ((0.1585529411764710 + 0.1714941176470590) / 2),
+            height * ((0.1326352941176470 + 0.1455764705882350) / 2),
+            height * ((0.1068117647058820 + 0.1197647058823530) / 2),
+            height * ((0.0809058823529412 + 0.0944000000000000) / 2),
         ]
 
-        # Recreate the summary rows on every page update instead of only
-        # editing placeholder text. This matches the robust table-row pattern
-        # and avoids situations where ArcGIS silently loses placeholder text
-        # elements during layout regeneration or grouping.
-        for idx in range(1, 5):
-            _set_text_element_at(
-                layout,
-                project,
-                f"Intersection Summary Row {idx}",
-                "",
-                summary_x,
-                summary_y_positions[idx - 1],
-                3,
-            )
+        # Remove any dynamic text in the summary panel before drawing the
+        # current page. This clears stale leftovers from previous reruns.
+        _delete_text_elements_in_box(
+            layout,
+            summary_box_left,
+            summary_box_right,
+            summary_box_bottom,
+            summary_box_top,
+        )
 
-        for idx, (name, counts) in enumerate(sorted(summary.items()), start=1):
-            if idx > 4:
+        row_idx = 0
+        for name, counts in sorted(summary.items()):
+            parts = []
+            if counts["intersections"] > 0:
+                n = counts["intersections"]
+                parts.append(f"{n} int.")
+            if counts["overlaps"] > 0:
+                n = counts["overlaps"]
+                parts.append(f"{n} ovl.")
+
+            if not parts:
+                continue
+
+            row_idx += 1
+            if row_idx > 4:
                 arcpy.AddWarning(
                     f"  Intersection Summary: {len(summary)} features found "
                     f"but only 4 rows available."
                 )
                 break
 
-            parts = []
-            if counts["intersections"] > 0:
-                n = counts["intersections"]
-                parts.append(f"{n} intersection{'s' if n > 1 else ''}")
-            if counts["overlaps"] > 0:
-                n = counts["overlaps"]
-                parts.append(f"{n} overlap{'s' if n > 1 else ''}")
-
-            row_text = f"{name}:  {', '.join(parts)}"
+            display_name = _clean_summary_source_name(name)
+            row_text = f"{display_name}: {', '.join(parts)}"
             _set_text_element_at(
                 layout,
                 project,
-                f"Intersection Summary Row {idx}",
+                f"Auto Intersection Summary Row {row_idx}",
                 row_text,
-                summary_x,
-                summary_y_positions[idx - 1],
-                3,
+                summary_text_x,
+                summary_row_y_positions[row_idx - 1],
+                2.5,
+                anchor="LeftPoint",
             )
 
-        if summary:
+        if row_idx > 0:
             arcpy.AddMessage(
-                f"  Intersection Summary: populated {min(len(summary), 4)} rows."
+                f"  Intersection Summary: populated {row_idx} row{'s' if row_idx > 1 else ''}."
             )
         else:
             arcpy.AddMessage(
@@ -389,7 +548,7 @@ def auto_populate_layout(
     except Exception as e:
         arcpy.AddWarning(f"  Could not set station fields: {e}")
 
-    #  Total Length — updates per page in map series
+    # Total Length — updates per page in map series
     try:
         total_length = route_end - route_start
         if total_length >= 1000:
@@ -401,7 +560,7 @@ def auto_populate_layout(
     except Exception as e:
         arcpy.AddWarning(f"  Could not set Total Length: {e}")
 
-    #  Date — only on first population
+    # Date — only on first population
     if not is_page_update:
         try:
             today = datetime.date.today().strftime("%d/%m/%Y")
@@ -525,10 +684,6 @@ def auto_populate_layout(
     except Exception as e:
         arcpy.AddWarning(f"  Could not populate Intersection Table: {e}")
 
-    # Intersection Summary intentionally disabled in v9 for now.
-    # We clear every summary row on each refresh/export so the section stays
-    # blank instead of repeating incorrect route-wide content across pages.
-    for idx in range(1, 5):
-        _clear_text_element(layout, f"Intersection Summary Row {idx}")
+    _populate_intersection_summary(layout, project, width, height, band_records)
 
     arcpy.AddMessage("  Auto-population complete.")

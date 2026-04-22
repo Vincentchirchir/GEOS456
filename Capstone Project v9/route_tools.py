@@ -2,7 +2,6 @@ import arcpy
 import os
 
 
-# This function prepares a route for route creation
 def create_route_with_measure_system(
     input_line_fc,
     out_gdb,
@@ -10,6 +9,34 @@ def create_route_with_measure_system(
     route_id_field="ROUTE_ID",
     route_id_value="ROUTE_01",
 ):
+    """
+    Creates an M-enabled route feature class from a line feature class.
+
+    Copies the input line, dissolves it into a single feature, then runs
+    Create Routes using FromM and ToM fields derived from the line's shape
+    length and the specified start measure.
+
+    Parameters
+    ----------
+    input_line_fc : str
+        Path to the input line feature class.
+    out_gdb : str
+        Path to the output geodatabase.
+    start_measure : float, optional
+        Starting measure value. Defaults to 0.
+    route_id_field : str, optional
+        Name of the route identifier field. Defaults to "ROUTE_ID".
+    route_id_value : str, optional
+        Value written into the route identifier field. Defaults to "ROUTE_01".
+
+    Returns
+    -------
+    dict
+        route_fc       -- path to the output route feature class
+        route_id_field -- name of the route ID field
+        route_id_value -- value in the route ID field
+        base_name      -- validated base name derived from the input
+    """
     desc = arcpy.Describe(input_line_fc)
     catalog_path = desc.catalogPath
 
@@ -17,16 +44,15 @@ def create_route_with_measure_system(
         os.path.splitext(os.path.basename(catalog_path))[0], out_gdb
     )
 
-    # Here we are creating a copy of the original line so that the script can work on the copy feature and not interefe with the original feature. But later we will delete and will not be there in the final gdb
+    # Work on a copy so the original feature class is never modified
     line_copy_fc = os.path.join(out_gdb, base_name + "_copy")
     arcpy.management.CopyFeatures(input_line_fc, line_copy_fc)
 
-    # Add field value that contains values that uniquely identify each route.
+    # Add the route ID field and fill it with the specified value
     field_names = [f.name for f in arcpy.ListFields(line_copy_fc)]
     if route_id_field not in field_names:
         arcpy.management.AddField(line_copy_fc, route_id_field, "TEXT", field_length=50)
 
-    # calculate field so that the route will have the same route attributes. In this case the attribute has been set to ROUTE_01. So the the column will have ROUTE_01 from start to end
     arcpy.management.CalculateField(
         in_table=line_copy_fc,
         field=route_id_field,
@@ -34,12 +60,11 @@ def create_route_with_measure_system(
         expression_type="PYTHON3",
     )
 
-    # dissolving the line into one line incase if it is broken (This one applies only to one line. If you have a multiple lines and you want to treat them separately, then dissolve will not be used)
+    # Dissolve in case the line is split into multiple segments
     route_diss = os.path.join(out_gdb, base_name + "_dissolve")
     arcpy.management.Dissolve(line_copy_fc, route_diss, route_id_field)
 
-    # The script will have the option of chossing start and end for which you want to create route or intervals. So here we are adding field for From measure and To measure
-    # This way we will be able to calculate the two fields
+    # FromM and ToM are required by Create Routes when using two fields for measures
     diss_fields = [f.name for f in arcpy.ListFields(route_diss)]
     if "FromM" not in diss_fields:
         arcpy.management.AddField(route_diss, "FromM", "DOUBLE")
@@ -62,15 +87,12 @@ def calc_to_m(shape_length, start_m):
         code_block,
     )
 
-    # Here we are starting with the first part of linear referencing which is CREATE ROUTE.
-    # The output of this tool will be a feature class written to gdb, and M Domains have been created
-    route_fc = os.path.join(out_gdb, base_name + "_route")
+    route_fc = os.path.join(out_gdb, base_name + "_Route")
     arcpy.lr.CreateRoutes(
-        route_diss, route_id_field, route_fc, "TWO_FIELDS", "FromM", "Tom"
+        route_diss, route_id_field, route_fc, "TWO_FIELDS", "FromM", "ToM"
     )
 
-    # Here we are deleting the line copy feature we had created earlier and the dissolved line
-    # We are deleting because the route has been created which is the same and we still have the original copy of the line feature
+    # Delete intermediates — only the route output is needed
     if arcpy.Exists(line_copy_fc):
         arcpy.management.Delete(line_copy_fc)
     if arcpy.Exists(route_diss):
@@ -84,9 +106,6 @@ def calc_to_m(shape_length, start_m):
     }
 
 
-# The following function prepares for lines that station will be generated on
-# Coz ecause sometimes you do not want to generate stations on the entire route exactly as-is.
-# You may want trimming based on start_measure or trimming based on end_measure
 def create_stationing_source_line(
     route_fc,
     out_gdb,
@@ -96,9 +115,36 @@ def create_stationing_source_line(
     start_measure=None,
     end_measure=None,
 ):
-    if (
-        end_measure is None
-    ):  # Here we are telling the script if the user does not provide the end measure, just produce the intervals from the specified start to the end of the line coz there is not end specified
+    """
+    Returns the line that stationing will be generated on.
+
+    If end_measure is provided, clips the route to the given measure range
+    using Make Route Event Layer and returns the clipped feature class.
+    If end_measure is None, the full route is returned as-is.
+
+    Parameters
+    ----------
+    route_fc : str
+        Path to the M-enabled route feature class.
+    out_gdb : str
+        Path to the output geodatabase.
+    base_name : str
+        Base name used for naming intermediate and output feature classes.
+    route_id_field : str
+        Name of the route identifier field.
+    route_id_value : str
+        Value in the route identifier field.
+    start_measure : float, optional
+        Start of the measure range to clip to.
+    end_measure : float, optional
+        End of the measure range to clip to. If None, the full route is used.
+
+    Returns
+    -------
+    str
+        Path to the line feature class to station along.
+    """
+    if end_measure is None:  # no end measure — use the full route
         return route_fc
 
     segment_table = os.path.join(out_gdb, f"{base_name}_segment_event")
@@ -129,6 +175,10 @@ def create_stationing_source_line(
         in_event_properties=f"{route_id_field} LINE FMEAS TMEAS",
         out_layer=segment_layer,
     )
+
+    # segment_table has served its purpose — delete it now so it does not
+    # appear as a stale intermediate in the output GDB.
+    arcpy.management.Delete(segment_table)
 
     segment_fc = os.path.join(out_gdb, f"{base_name}_segment_fc")
     if arcpy.Exists(segment_fc):

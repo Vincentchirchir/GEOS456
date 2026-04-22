@@ -3,39 +3,44 @@ import os
 import sys
 import importlib
 
-import route_tools_v3
-import stationing_tools_v3
-import events_tools_v3
-import map_tools_v3
-import layout_elements_v3
-import layout_tools_v3  # layout_tools
+import route_tools
+import stationing_tools
+import events_tools
+import map_tools
+import layout_elements
+import layout_tools
 import band_tools
 import auto_populate
-import map_series_tools_v3
+import map_series_tools
 
 
 tool_folder = os.path.dirname(__file__)
 if tool_folder not in sys.path:
     sys.path.append(tool_folder)
 
-from route_tools_v3 import (
+from route_tools import (
     create_route_with_measure_system,
     create_stationing_source_line,
 )
-from stationing_tools_v3 import (
+from stationing_tools import (
     remove_duplicate_station_measure,
     join_station_chainage_to_points,
     create_route_stationing,
 )
-from events_tools_v3 import (
+from events_tools import (
     create_intersections_and_overlaps,
     locate_intersections_and_overlaps,
     chainage_code_block,
     add_chainage_to_event_tables,
     make_event_layers_from_tables,
 )
-from map_tools_v3 import add_output_to_current_map
-from layout_tools_v3 import generate_alignment_layout
+from map_tools import (
+    add_output_to_current_map,
+    snapshot_site_layer_uris,
+    apply_mini_map_visibility_override,
+    build_mini_map_from_main_map,
+)
+from layout_tools import generate_alignment_layout
 
 from band_tools import (
     build_band_records,
@@ -52,24 +57,24 @@ from band_tools import (
     clear_point_ticks_and_labels,
 )
 from auto_populate import auto_populate_layout
-from map_series_tools_v3 import update_map_series_pages, create_layout_map_series
+from map_series_tools import update_map_series_pages
 from band_tools import build_line_records_with_layout_xy
 
-importlib.reload(route_tools_v3)
-importlib.reload(stationing_tools_v3)
-importlib.reload(events_tools_v3)
-importlib.reload(map_tools_v3)
-importlib.reload(layout_tools_v3)
-importlib.reload(layout_elements_v3)
+importlib.reload(route_tools)
+importlib.reload(stationing_tools)
+importlib.reload(events_tools)
+importlib.reload(map_tools)
+importlib.reload(layout_tools)
+importlib.reload(layout_elements)
 importlib.reload(band_tools)
 importlib.reload(auto_populate)
-importlib.reload(map_series_tools_v3)
+importlib.reload(map_series_tools)
 
 
-# Import band-position constants from layout_elements_v3 AFTER the reload so
-# any in-session changes to that module are reflected here without restarting.
+# Import band-position constants from layout_tools AFTER the reload so
+# any in-session edits to that module are reflected here without restarting.
 # Single source of truth — do NOT redefine these here.
-from layout_elements_v3 import (
+from layout_tools import (
     BAND_TOP_UPPER_FRAC,
     BAND_BOTTOM_UPPER_FRAC,
     BAND_TOP_LOWER_FRAC,
@@ -115,15 +120,12 @@ def _get_stationing_band_geometry(layout, map_frame):
     """
     page_height = layout.pageHeight  # full page height in inches
 
-    # Three label rows cycling through the top band gaps
-
     # Band left and width follow the map frame so ticks align with the map
     band_left = map_frame.elementPositionX
     band_width = map_frame.elementWidth
 
     # Top band positions
     top_band_top = page_height * BAND_TOP_UPPER_FRAC  # 10.50"
-    # top_band_bottom = page_height * BAND_BOTTOM_UPPER_FRAC  #  9.50"
     top_band_bottom = (
         map_frame.elementPositionY + map_frame.elementHeight
     )  # top edge of frame
@@ -189,13 +191,13 @@ class GenerateAlignmentSheets(object):
     def __init__(self):
         self.label = "Generate Alignment Sheets"
         self.description = (
-            "Generates alignemnt sheets with stationings, intersections, overlaps, etc."
+            "Generates alignment sheets with stationing, intersections, and overlaps."
         )
 
     def getParameterInfo(self):
         input_line = arcpy.Parameter(
             displayName="Input Linear Feature",
-            name="input_line",  # THIS IS INTERNAL PYTHON NAME
+            name="input_line",
             datatype="GPFeatureLayer",
             parameterType="Required",
             direction="Input",
@@ -209,7 +211,7 @@ class GenerateAlignmentSheets(object):
             direction="Input",
         )
 
-        # setting default gdb
+        # Default to the current project geodatabase
         try:
             output_gdb.value = arcpy.mp.ArcGISProject("CURRENT").defaultGeodatabase
         except:
@@ -416,7 +418,7 @@ class GenerateAlignmentSheets(object):
         except:
             pass
 
-        # Desriptions to tools that shows when you hover the parameter
+        # Tooltip descriptions shown when hovering over each parameter
         input_line.description = "Select the main polyline feature to station."
         output_gdb.description = "Choose the output file geodatabase."
         station_interval.description = (
@@ -490,14 +492,6 @@ class GenerateAlignmentSheets(object):
             for i in map_series_param_indexes:
                 parameters[i].enabled = False
 
-        # Enable / disable map series parameters
-        if create_layout.value and create_map_series.value:
-            for i in map_series_param_indexes:
-                parameters[i].enabled = True
-        else:
-            for i in map_series_param_indexes:
-                parameters[i].enabled = False
-
         # Enable export PDF only when both layout and map series are checked
         if create_layout.value and create_map_series.value:
             parameters[16].enabled = True  # export_pdf
@@ -532,7 +526,7 @@ class GenerateAlignmentSheets(object):
         tolerance = parameters[5]
         analysis_layers = parameters[6]
 
-        # Layout Validtion
+        # Layout validation
         create_layout = parameters[7]
         layout_name = parameters[8]
         layout_size = parameters[9]
@@ -604,20 +598,20 @@ class GenerateAlignmentSheets(object):
             except:
                 map_series_overlap.setErrorMessage("Overlap must be a whole number.")
 
-        # validate tolerance
+        # Validate tolerance
         if tolerance.value:
             try:
                 tol = float(tolerance.valueAsText.split()[0])
 
                 if tol <= 0:
-                    tolerance.setErrorMessage("Tolerance must be greate than zero")
+                    tolerance.setErrorMessage("Tolerance must be greater than zero.")
                 elif tol > 100:
                     tolerance.setWarningMessage(
                         "Large tolerance may snap unrelated features to the route"
                     )
             except:
                 tolerance.setErrorMessage("Invalid tolerance value. Example: 1 Meters")
-        # warn if there is no active map
+        # Warn if there is no active map
         try:
             aprx = arcpy.mp.ArcGISProject("CURRENT")
             if aprx.activeMap is None:
@@ -643,7 +637,7 @@ class GenerateAlignmentSheets(object):
             except Exception as e:
                 input_line.setErrorMessage(f"Invalid input feature: {e}")
 
-        # validating output workspace as geodatabse
+        # Validate output workspace
         if output_gdb.value:
             try:
                 out_path = output_gdb.valueAsText
@@ -775,7 +769,6 @@ class GenerateAlignmentSheets(object):
                     f"Invalid Intersecting and Overlapping: {e}"
                 )
 
-    # Excute functions
     def execute(self, parameters, messages):
         arcpy.env.overwriteOutput = True
 
@@ -905,6 +898,32 @@ class GenerateAlignmentSheets(object):
         pdf_output_folder = parameters[17].valueAsText
 
         target_map_names = [name for name in [main_map_name, mini_map_name] if name]
+        effective_mini_map_name = mini_map_name
+        using_dedicated_mini_map = False
+
+        # ── Mini map site-layer snapshot ──────────────────────────────────────
+        # Capture the CIM URI of every layer already in the map BEFORE any
+        # tool outputs are added.  This set is used after the layout is built
+        # to whitelist only the user's original site layers in the mini map
+        # frame, preventing generated outputs (route, stations, intersections,
+        # overlaps) from cluttering the context overview.
+        #
+        # We resolve the map by name rather than using aprx.activeMap because
+        # the active view is unreliable once a layout is open in ArcGIS Pro.
+        # main_map_name takes priority; mini_map_name is the fallback for
+        # projects that use a single map for both frames.
+        _snapshot_aprx = arcpy.mp.ArcGISProject("CURRENT")
+        _snapshot_map_name = main_map_name or mini_map_name
+        _snapshot_maps = (
+            _snapshot_aprx.listMaps(_snapshot_map_name) if _snapshot_map_name else []
+        )
+        site_layer_uris = (
+            snapshot_site_layer_uris(_snapshot_maps[0]) if _snapshot_maps else set()
+        )
+        messages.addMessage(
+            f"Site layer snapshot: {len(site_layer_uris)} URI(s) recorded "
+            f"before tool outputs are added to the map."
+        )
 
         # Add outputs to the maps the layout actually uses instead of whichever
         # map happened to be active in ArcGIS Pro. This keeps the main map,
@@ -914,6 +933,22 @@ class GenerateAlignmentSheets(object):
                 event_feature_outputs, target_map_names=target_map_names
             )
         add_output_to_current_map(outputs, target_map_names=target_map_names)
+
+        # When the user intentionally uses the same map for both frames, ArcGIS
+        # Pro still shares one layer collection between those frames. Create a
+        # dedicated mini-map copy after outputs are added so the mini frame can
+        # hide clutter without affecting the main map.
+        if (
+            create_layout
+            and main_map_name
+            and mini_map_name
+            and main_map_name == mini_map_name
+        ):
+            effective_mini_map_name = build_mini_map_from_main_map(
+                main_map_name,
+                route_fc=outputs.get("route_fc"),
+            )
+            using_dedicated_mini_map = effective_mini_map_name != mini_map_name
 
         layout_result = None
 
@@ -925,7 +960,7 @@ class GenerateAlignmentSheets(object):
                     layout_name=layout_name,
                     layout_size=layout_size,
                     main_map_name=main_map_name,
-                    mini_map_name=mini_map_name,
+                    mini_map_name=effective_mini_map_name,
                     input_line_fc=input_line_fc,
                     output_gdb=output_gdb,
                     create_map_series=create_map_series,
@@ -939,6 +974,24 @@ class GenerateAlignmentSheets(object):
                 raise
 
         if create_layout and layout_result:
+
+            # ── Mini map visibility override ───────────────────────────────────
+            # If a dedicated mini-map copy was created, the layer visibility is
+            # already controlled at the map level and no frame-level override
+            # is needed. Otherwise keep the older CIM whitelist path for
+            # projects that truly use separate maps for the two frames.
+            if not using_dedicated_mini_map:
+                apply_mini_map_visibility_override(
+                    layout_result["mini_map_frame"],
+                    site_layer_uris,
+                    route_fc=outputs.get("route_fc"),
+                )
+            else:
+                messages.addMessage(
+                    f"Mini map is using dedicated map '{effective_mini_map_name}', "
+                    "so frame-level visibility override was skipped."
+                )
+
             route_fc = outputs["route_fc"]
 
             messages.addMessage(f"route_fc before layout: {route_fc}")
@@ -1027,9 +1080,6 @@ class GenerateAlignmentSheets(object):
                 # Clear any old ticks and labels before redrawing
                 clear_point_ticks_and_labels(layout)
 
-                # Build records with real map layout coordinates for each point
-
-                # Build point records
                 point_records_with_xy = build_point_records_with_layout_xy(
                     point_event_features=point_event_features,
                     map_frame=map_frame,

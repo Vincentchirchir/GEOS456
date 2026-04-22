@@ -37,7 +37,7 @@ def create_layout_map_series(
     dict with keys: index_fc, index_layer, map_series
     """
     data_input = os.path.splitext(os.path.basename(str(input_line_fc)))[0]
-    index_output = os.path.join(output_gdb, f"{data_input}_index")
+    index_output = os.path.join(output_gdb, f"{data_input}_MapIndex")
 
     if arcpy.Exists(index_output):
         arcpy.management.Delete(index_output)
@@ -233,12 +233,9 @@ def _merge_exported_page_pdfs(page_pdf_paths, merged_pdf_path):
     return merged_pdf_path
 
 
-def _resolve_preview_page_number(map_series, page_count):
+def _resolve_safe_page_number(map_series, page_count):
     """
-    Returns a safe page number to leave active in the layout after processing.
-
-    Custom ticks/tables are shared layout elements, so after batch exporting we
-    redraw one final preview page and leave the layout on that page for the user.
+    Returns a valid page number for restoring the layout view after processing.
     """
     try:
         page_num = int(getattr(map_series, "currentPageNumber", 1) or 1)
@@ -248,6 +245,58 @@ def _resolve_preview_page_number(map_series, page_count):
     if page_num < 1 or page_num > page_count:
         return 1
     return page_num
+
+
+def _restore_route_wide_layout_state(
+    layout,
+    map_series,
+    page_num,
+    input_line_fc,
+    route_fc,
+    route_start,
+    route_end,
+    project,
+    width,
+    height,
+):
+    """
+    Removes shared page-specific graphics and restores route-wide layout text.
+
+    Map-series ticks/labels and the intersection table are shared layout
+    elements, so once exporting is finished we reset the layout to a neutral
+    route-wide state rather than leaving one page's custom graphics visible.
+    """
+    from band_tools import clear_point_ticks_and_labels
+    from auto_populate import auto_populate_layout
+
+    try:
+        map_series.currentPageNumber = page_num
+    except Exception as e:
+        arcpy.AddWarning(f"Could not restore layout page {page_num}: {e}")
+
+    try:
+        removed = clear_point_ticks_and_labels(layout)
+        arcpy.AddMessage(
+            f"Cleared {removed} shared map-series tick/label element(s)."
+        )
+    except Exception as e:
+        arcpy.AddWarning(f"Could not clear shared map-series graphics: {e}")
+
+    try:
+        auto_populate_layout(
+            layout=layout,
+            project=project,
+            width=width,
+            height=height,
+            input_line_fc=input_line_fc,
+            route_fc=route_fc,
+            route_start=route_start,
+            route_end=route_end,
+            band_records=[],
+        )
+        arcpy.AddMessage("Restored layout text to route-wide base values.")
+    except Exception as e:
+        arcpy.AddWarning(f"Could not restore route-wide layout text: {e}")
 
 
 def _update_single_map_series_page(
@@ -489,11 +538,13 @@ def update_map_series_pages(
         3. Export that page immediately
         4. Merge the exported page PDFs afterwards
 
-    When export_pdf is False we update only the active preview page, since
-    browsing to another page in the layout will not auto-refresh these custom
-    layout graphics without rerunning the tool.
+    This function intentionally does not leave behind a page preview. After
+    exporting, shared page-specific graphics are cleared and the layout is
+    restored to a route-wide base state so stale page content does not linger
+    while browsing the map series interactively.
 
     Parameters
+    ----------
     layout : arcpy.mp.Layout
     map_frame : arcpy.mp.MapFrame
     map_series : arcpy.mp.SpatialMapSeries
@@ -524,7 +575,7 @@ def update_map_series_pages(
         arcpy.AddWarning("No map series pages were found.")
         return
 
-    preview_page_num = _resolve_preview_page_number(map_series, page_count)
+    return_page_num = _resolve_safe_page_number(map_series, page_count)
 
     if export_pdf and pdf_output_folder:
         exported_page_paths = []
@@ -580,53 +631,40 @@ def update_map_series_pages(
         else:
             arcpy.AddWarning("No individual page PDFs were created, so merge was skipped.")
 
-        # Leave the layout on a sensible preview page when the tool finishes.
-        _update_single_map_series_page(
+        _restore_route_wide_layout_state(
             layout=layout,
-            map_frame=map_frame,
             map_series=map_series,
-            index_fc=index_fc,
             route_fc=route_fc,
-            band_records=band_records,
-            point_event_features=point_event_features,
-            line_event_features=line_event_features,
-            band_geom=band_geom,
             input_line_fc=input_line_fc,
             project=project,
             width=width,
             height=height,
-            page_num=preview_page_num,
-            page_count=page_count,
-            scale=scale,
+            page_num=return_page_num,
+            route_start=route_start,
+            route_end=route_end,
         )
     else:
         arcpy.AddMessage(
-            "Export PDF is off — updating the active preview page only. "
-            "Custom band graphics are redrawn for the visible page, not stored "
-            "natively per map-series page."
+            "Export PDF is off — preview redraw is disabled. "
+            "Shared page-specific graphics will not be rebuilt for interactive "
+            "page browsing."
         )
 
-        _update_single_map_series_page(
+        _restore_route_wide_layout_state(
             layout=layout,
-            map_frame=map_frame,
             map_series=map_series,
-            index_fc=index_fc,
             route_fc=route_fc,
-            band_records=band_records,
-            point_event_features=point_event_features,
-            line_event_features=line_event_features,
-            band_geom=band_geom,
             input_line_fc=input_line_fc,
             project=project,
             width=width,
             height=height,
-            page_num=preview_page_num,
-            page_count=page_count,
-            scale=scale,
+            page_num=return_page_num,
+            route_start=route_start,
+            route_end=route_end,
         )
 
     arcpy.AddMessage("Map series page update complete.")
     arcpy.AddMessage(
-        "The active layout page has been refreshed. Use Export PDF for a fully "
-        "populated multi-page deliverable built from page-by-page redraws."
+        "Use Export PDF for page-aware output. The layout has been reset to its "
+        "route-wide base state instead of leaving behind a page preview."
     )
